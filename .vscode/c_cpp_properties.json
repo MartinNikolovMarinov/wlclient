@@ -1,0 +1,14 @@
+{
+    "version": 4,
+    "enableConfigurationSquiggles": true,
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [],
+            "intelliSenseMode": "clang-x64",
+            "compileCommands": "${workspaceFolder}/build/compile_commands.json",
+            "cStandard": "c17",
+            "cppStandard": "c++20"
+        }
+    ]
+}

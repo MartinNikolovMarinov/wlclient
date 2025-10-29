@@ -1,0 +1,38 @@
+{
+	"version": 3,
+	"configurePresets": [
+		{
+			"name": "release",
+			"displayName": "Release configuration",
+			"description": "Release configuration",
+			"binaryDir": "${sourceDir}/build",
+			"cacheVariables": {
+				"CMAKE_C_COMPILER": "clang",
+				"CMAKE_CXX_COMPILER": "clang++",
+				"CMAKE_BUILD_TYPE": "Release",
+
+				"CORE_LIBRARY_SHARED": "OFF",
+
+				"HOT_SWAP": "OFF",
+				"USE_ANSI_LOGGING": "ON"
+			}
+		},
+		{
+			"name": "debug",
+			"displayName": "Debug configuration",
+			"description": "Debug configuration",
+			"binaryDir": "${sourceDir}/build",
+			"cacheVariables": {
+				"CMAKE_C_COMPILER": "clang",
+				"CMAKE_CXX_COMPILER": "clang++",
+				"CMAKE_BUILD_TYPE": "Debug",
+
+				"CORE_LIBRARY_SHARED": "ON",
+
+				"HOT_SWAP": "ON",
+				"USE_ANSI_LOGGING": "ON"
+			}
+		}
+	]
+}
+
