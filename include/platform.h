@@ -8,6 +8,8 @@ struct OpenWindowInfo {
     bool useSoftwareRendering;
 };
 
+// TODO: Handle "High density surfaces (HiDPI)"
+
 void platformInit();
 void platformShutdown();
 

@@ -1,3 +1,5 @@
+#include <cmath>
+
 #include "entry.h"
 #include "core_init.h"
 
@@ -45,25 +47,26 @@ namespace {
 bool g_lastFrameRendered = false;
 
 void setupScene() {
-    if (g_lastFrameRendered) return;
-
-    static auto xx = core::getPerfCounter();
-
-    u8 r = u8((xx/3)%255);
-    u8 g = u8((xx/2)%255);
-    u8 b = u8(xx%255);
+    // Time-based values, independent of frame rate.
+    f64 tSeconds = core::getPerfCounter() / core::CORE_SECOND;
+    // Slow moving color changes.
+    u8 r = u8(std::fmod(tSeconds * 10.0, 255.0));
+    u8 g = u8(std::fmod(tSeconds * 7.0, 255.0));
+    u8 b = u8(std::fmod(tSeconds * 5.0, 255.0));
     u8 a = u8(255);
-
-    xx = core::getPerfCounter();
 
     rendererClearScreen({.r = r, .g = g, .b = b, .a = a});
 
     i32 tmpWidth = 600;
     i32 tmpHeight = 600;
-    renderDirectRect({.r = 255, .g = 0, .b = 0, .a = 255}, 0, 0, 50, 50);
-    renderDirectRect({.r = 0, .g = 255, .b = 0, .a = 255}, tmpWidth - 50, tmpHeight - 50, 50, 50);
-    renderDirectRect({.r = 0, .g = 0, .b = 255, .a = 255}, tmpWidth - 50, 0, 50, 50);
-    renderDirectRect({.r = 0, .g = 255, .b = 255, .a = 255}, 0, tmpHeight - 50, 50, 50);
+    f64 step = tSeconds * 50.0;
+    i32 xx = i32(std::fmod(step, f64(tmpWidth)));
+    i32 yy = i32(std::fmod(step, f64(tmpHeight)));
+
+    renderDirectRect({.r = 255, .g = 0, .b = 0, .a = 255}, xx, 0, 50, 50);
+    renderDirectRect({.r = 0, .g = 255, .b = 0, .a = 255}, (tmpWidth - 50) - xx, tmpHeight - 50, 50, 50);
+    renderDirectRect({.r = 0, .g = 0, .b = 255, .a = 255}, tmpWidth - 50, yy, 50, 50);
+    renderDirectRect({.r = 0, .g = 255, .b = 255, .a = 255}, 0, (tmpHeight - 50) - yy, 50, 50);
 }
 
 } // namespace

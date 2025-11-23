@@ -150,7 +150,7 @@ void xdgSurfaceConfigure(void*, xdg_surface *xdgSurface, uint32_t serial) {
         );
         PanicFmt(g_mappedData != MAP_FAILED, "Failed to memory map the anonymous file, err_code={}", errno);
 
-        // TODO: might want to not do this in release builds:
+        // TODO: might want to avoid doing this in release builds:
         core::memset(g_mappedData, u8(0x00), addr_size(size));
 
         wl_shm_pool* pool = wl_shm_create_pool(g_shm, fd, i32(size));
