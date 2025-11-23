@@ -7,6 +7,7 @@ constexpr i32 CONTINUE_TO_RUN_CODE = 1;
 
 i32 main(i32 argc, const char** argv) {
     coreInit();
+    defer { coreShutdown(); };
 
     entryInit(argc, argv);
 

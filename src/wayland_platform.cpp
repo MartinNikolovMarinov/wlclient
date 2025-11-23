@@ -26,6 +26,7 @@ xdg_wm_base_listener g_xdgWmBaseListener = {};
 
 wl_compositor *g_compositor = nullptr;
 wl_surface* g_surface = nullptr;
+wl_keyboard* g_keyboard = nullptr;
 xdg_surface* g_xdgSurface = nullptr;
 xdg_toplevel* g_xdgToplevel = nullptr;
 xdg_surface_listener g_xdgSurfaceListener = {};
@@ -53,8 +54,12 @@ inline void handleDisplayFlushError(i32 errCode, const char* context) {
     }
 }
 
-void registerGlobal(void* userData, wl_registry* registry,
-                    uint32_t name, const char* interface, uint32_t version) {
+void xdgWmBasePing(void*, xdg_wm_base *xdgWmBase, uint32_t serial) {
+    logInfoTagged(LoggerTags::T_PLATFORM, "Ping received serial: {}", serial);
+    xdg_wm_base_pong(xdgWmBase, serial);
+}
+
+void registerGlobal(void*, wl_registry* registry, uint32_t name, const char* interface, uint32_t version) {
     auto pickVersion = [&version](auto& x) {
         i32 compositorSupported = x.version; // if this can be negative I will stop using wayland.
         u32 bindVersion = core::core_min(version, u32(compositorSupported));
@@ -68,17 +73,21 @@ void registerGlobal(void* userData, wl_registry* registry,
     };
 
     if (core::sv(interface).eq("wl_seat")) {
-        wl_seat** localSeat = reinterpret_cast<wl_seat**>(userData); // references the same global seat.
-        *localSeat = reinterpret_cast<wl_seat*>(
+        g_seat = reinterpret_cast<wl_seat*>(
             wl_registry_bind(registry, name, &wl_seat_interface, pickVersion(wl_seat_interface))
         );
-        Panic(*localSeat, "Failed to bind localSeat");
+        Panic(g_seat, "Failed to bind localSeat");
     }
     else if (core::sv(interface).eq("xdg_wm_base")) {
         g_xdgWmBase = reinterpret_cast<xdg_wm_base*>(
             wl_registry_bind(registry, name, &xdg_wm_base_interface, pickVersion(xdg_wm_base_interface))
         );
         Panic(g_xdgWmBase, "Failed to bind g_xdgWmBase");
+
+        // Setup ping handler
+        g_xdgWmBaseListener.ping = xdgWmBasePing;
+        i32 ret = xdg_wm_base_add_listener(g_xdgWmBase, &g_xdgWmBaseListener, nullptr);
+        PanicFmt(ret == 0, "xdg_wm_base_add_listener exited with {}", ret);
     }
     else if (core::sv(interface).eq("wl_compositor")) {
         g_compositor = reinterpret_cast<wl_compositor*>(
@@ -108,11 +117,6 @@ void registerGlobal(void* userData, wl_registry* registry,
 void registerGlobalRemove(void*, wl_registry*, uint32_t name) {
     logWarnTagged(LoggerTags::T_PLATFORM, "Register Global Remove called for objId: {}", name);
     // TODO2: I might want to handle this just in case.
-}
-
-void xdgWmBasePing(void*, xdg_wm_base *xdgWmBase, uint32_t serial) {
-    logInfoTagged(LoggerTags::T_PLATFORM, "Ping received serial: {}", serial);
-    xdg_wm_base_pong(xdgWmBase, serial);
 }
 
 void releaseBuffer(void *data, struct wl_buffer *) {
@@ -186,7 +190,7 @@ void platformInit() {
 
         g_registerListener.global = registerGlobal;
         g_registerListener.global_remove = registerGlobalRemove;
-        ret = wl_registry_add_listener(g_registry, &g_registerListener, &g_seat);
+        ret = wl_registry_add_listener(g_registry, &g_registerListener, nullptr);
         PanicFmt(ret == 0, "wl_registry_add_listener exited with {}", ret);
 
         ret = wl_display_roundtrip(g_display);  // Block until all pending request are processed
@@ -200,13 +204,6 @@ void platformInit() {
     Panic(g_shm, "Compositor did not advertise wl_shm");
     Panic(g_seat, "Compositor did not advertise wl_seat");
     Panic(g_pixelFormat == PixelFormat::UNDEFINED, "Did not find supported pixel format");
-
-    // Setup ping/pong
-    Panic(g_xdgWmBase, "xdgWmBase was not initialized in registerGlobal");
-    g_xdgWmBaseListener.ping = xdgWmBasePing;
-    ret = xdg_wm_base_add_listener(g_xdgWmBase, &g_xdgWmBaseListener, nullptr);
-    PanicFmt(ret == 0, "xdg_wm_base_add_listener exited with {}", ret);
-    logInfoTagged(LoggerTags::T_PLATFORM, "XDG WmBase initialized.");
 }
 
 void platformShutdown() {

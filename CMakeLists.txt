@@ -89,7 +89,7 @@ macro(common_target_setup target)
     wayland_gui_target_set_default_flags(${target} ${WAYLAND_APP_DEBUG} false)
 endmacro()
 
-if(HOT_SWAP)
+if(!HOT_SWAP)
     # GUI shared library (reloadable)
     add_library(${target_gui} SHARED ${src_gui})
     target_link_libraries(${target_gui} PRIVATE core wayland-client)

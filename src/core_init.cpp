@@ -43,5 +43,5 @@ void coreInit() {
 }
 
 void coreShutdown() {
-    core::destroyProgramCtx();
+    core::destroyProgramCtx(true);
 }
