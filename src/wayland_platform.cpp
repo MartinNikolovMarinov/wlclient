@@ -186,6 +186,7 @@ void xdgSurfaceConfigure(void*, xdg_surface *xdgSurface, uint32_t serial) {
 
 void platformInit() {
     Panic(core::loggerSetTag(i32(LoggerTags::T_PLATFORM), "WAYLAND_LINUX_PLATFORM"_sv));
+    core::loggerSetLevel(core::LogLevel::L_INFO, LoggerTags::T_PLATFORM);
     LOG_INFO_BLOCK_INIT_SECTION(LoggerTags::T_PLATFORM, "Platform");
 
     i32 ret;

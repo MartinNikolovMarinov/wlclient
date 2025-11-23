@@ -23,7 +23,9 @@ void entryInit(i32 argc, const char** argv) {
     (void)argv;
 
     coreInit();
-    Panic(core::loggerSetTag(i32(LoggerTags::T_ENTRY), "ENTRY"_sv));
+    Panic(core::loggerSetTag(LoggerTags::T_ENTRY, "ENTRY"_sv));
+    core::loggerSetLevel(core::LogLevel::L_TRACE); // global level logging
+    core::loggerSetLevel(core::LogLevel::L_INFO, LoggerTags::T_ENTRY);
 
     LOG_INFO_BLOCK_INIT_SECTION(LoggerTags::T_ENTRY, "Application");
 
@@ -43,16 +45,16 @@ namespace {
 bool g_lastFrameRendered = false;
 
 void setupScene() {
-    if (!g_lastFrameRendered) return;
+    if (g_lastFrameRendered) return;
 
-    static u16 tmpCounter = 1;
+    static auto xx = core::getPerfCounter();
 
-    u8 r = u8((tmpCounter/3)%255);
-    u8 g = u8((tmpCounter/2)%255);
-    u8 b = u8(tmpCounter%255);
+    u8 r = u8((xx/3)%255);
+    u8 g = u8((xx/2)%255);
+    u8 b = u8(xx%255);
     u8 a = u8(255);
 
-    tmpCounter++;
+    xx = core::getPerfCounter();
 
     rendererClearScreen({.r = r, .g = g, .b = b, .a = a});
 

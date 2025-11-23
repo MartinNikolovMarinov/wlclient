@@ -12,29 +12,39 @@
 #include "wayland_platform.h"
 #include "logger_config.h"
 
-// FIXME: A lot of error handling is still missing.
-
 namespace {
 
 SoftwareRenderingContext g_sharedRenderCtx;
 
 FrameBuffer& getFrameBuffer();
+void frameDone(void*, wl_callback* cb, u32);
+void requestFrameCallback();
+void validateRenderContext();
+
+wl_callback* g_frameCallback = nullptr;
+wl_callback_listener g_frameCallbackListener = {};
+bool g_canRender = true;
 
 } // namespace
 
 void rendererInit() {
     Panic(core::loggerSetTag(i32(LoggerTags::T_RENDERER), "WAYLAND_RENDERER"_sv));
+    core::loggerSetLevel(core::LogLevel::L_TRACE, LoggerTags::T_RENDERER);
+
     LOG_INFO_BLOCK_INIT_SECTION(LoggerTags::T_RENDERER, "Software Renderer");
 
     platformCreateSoftRendCtx(g_sharedRenderCtx);
-
-    for (addr_size i = 0; i < g_sharedRenderCtx.frameBuffers.len(); i++) {
-        Panic(g_sharedRenderCtx.frameBuffers[i].pixelFormat == PixelFormat::ARGB8888,
-            "The only currently supported pixel format is ARGB8888");
-    }
+    validateRenderContext();
 }
 
 bool renderFrame() {
+    if (!g_canRender) {
+        logTraceTagged(LoggerTags::T_RENDERER, "Skipping render; waiting for frame callback.");
+        return false;
+    }
+
+    logTraceTagged(LoggerTags::T_RENDERER, "Rendering..");
+
     bool& bufferIsReady = *g_sharedRenderCtx.bufferIsReady;
     auto surface = g_sharedRenderCtx.surface;
     auto display = g_sharedRenderCtx.display;
@@ -43,12 +53,11 @@ bool renderFrame() {
     auto height = getFrameBuffer().height;
 
     if (!bufferIsReady) {
+        // This might be redundant.
         logWarnTagged(LoggerTags::T_RENDERER, "Buffer not ready.");
         return false;
     }
     bufferIsReady = false;
-
-    logTraceTagged(LoggerTags::T_RENDERER, "Render Frame.");
 
     // Binds a wl_buffer to a surface for the next frame. The buffer holds the pixel data you want displayed. The attach
     // itself does nothing visible until you commit:
@@ -56,18 +65,26 @@ bool renderFrame() {
     // Marks a region of the buffer as changed. The compositor will re-sample that area from your attached buffer when
     // the surface is committed. Without a damage call, the compositor may skip repainting:
     wl_surface_damage_buffer(surface, 0, 0, width, height);
+
+    // Request a frame callback for this commit so we only render when the compositor is ready.
+    requestFrameCallback();
+
     // Finalizes the pending state changes (attach, damage, etc.). Once you commit, the compositor treats that buffer as
     // the new frame and later releases it when it’s no longer in use.
     wl_surface_commit(surface);
     // Finalizes the pending state changes (attach, damage, etc.). Once you commit, the compositor treats that buffer as
     // the new frame and later releases it when it’s no longer in use.
-    wl_display_flush(display);
+    i32 _ = wl_display_flush(display); // ignoring the error here for performance reasons.
 
     return true;
 }
 
 void rendererShutdown() {
     LOG_INFO_BLOCK_SHUTDOWN(LoggerTags::T_RENDERER, "Software Renderer");
+    if (g_frameCallback) {
+        wl_callback_destroy(g_frameCallback);
+        g_frameCallback = nullptr;
+    }
     g_sharedRenderCtx = {};
 }
 
@@ -106,6 +123,35 @@ namespace {
 FrameBuffer& getFrameBuffer() {
     // TODO: implement double/tripple buffering
     return g_sharedRenderCtx.frameBuffers.first();
+}
+
+void frameDone(void*, wl_callback* cb, u32) {
+    if (cb) wl_callback_destroy(cb);
+    g_frameCallback = nullptr;
+    g_canRender = true;
+}
+
+void requestFrameCallback() {
+    if (g_frameCallback) return; // already pending
+    g_canRender = false;
+    g_frameCallbackListener.done = frameDone;
+    g_frameCallback = wl_surface_frame(g_sharedRenderCtx.surface);
+    Panic(g_frameCallback, "wl_surface_frame returned null");
+    i32 ret = wl_callback_add_listener(g_frameCallback, &g_frameCallbackListener, nullptr);
+    PanicFmt(ret == 0, "wl_callback_add_listener exited with {}", ret);
+}
+
+void validateRenderContext() {
+    Panic(g_sharedRenderCtx.bufferIsReady, "Render context missing buffer readiness flag");
+    Panic(g_sharedRenderCtx.surface, "Render context missing surface");
+    Panic(g_sharedRenderCtx.display, "Render context missing display");
+    Panic(g_sharedRenderCtx.frameBuffers.len() > 0, "Render context missing framebuffer");
+
+    FrameBuffer& fb = g_sharedRenderCtx.frameBuffers.first();
+    Panic(fb.wlBuffer, "Framebuffer missing wl_buffer");
+    Panic(fb.data, "Framebuffer missing mapped memory");
+    Panic(fb.width > 0 && fb.height > 0, "Framebuffer has invalid dimensions");
+    Panic(fb.pixelFormat == PixelFormat::ARGB8888, "Unsupported pixel format");
 }
 
 } // namespace
