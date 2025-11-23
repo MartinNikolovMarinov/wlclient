@@ -9,13 +9,12 @@
 #include "xdg-shell-client-protocol.h"
 
 #include "platform.h"
+#include "wayland_platform.h"
 #include "logger_config.h"
-
-// FIXME: A lot of error handling is still missing.
 
 namespace {
 
-bool g_initSoftwareRenderer = false;
+bool g_useSoftwareRenderer = false;
 
 wl_display *g_display = nullptr;
 wl_registry *g_registry = nullptr;
@@ -32,14 +31,27 @@ xdg_toplevel* g_xdgToplevel = nullptr;
 xdg_surface_listener g_xdgSurfaceListener = {};
 
 [[maybe_unused]] wl_shm* g_shm = nullptr;
+[[maybe_unused]] wl_shm_listener g_shmListener = {};
 [[maybe_unused]] wl_buffer* g_buffer = nullptr;
 [[maybe_unused]] wl_buffer_listener g_bufferListener = {};
 [[maybe_unused]] u8* g_mappedData = nullptr;
 [[maybe_unused]] bool g_bufferIsReady = false;
+[[maybe_unused]] PixelFormat g_pixelFormat = PixelFormat::UNDEFINED;
 
 i32 g_windowWidth = 0;
 i32 g_windowHeight = 0;
 i32 g_windowStride = 0;
+
+inline void handleDisplayFlushError(i32 errCode, const char* context) {
+    if (errCode < 0) {
+        if (errno == EAGAIN) {
+            logDebugTagged(LoggerTags::T_PLATFORM, "wl_display_flush would block (EAGAIN) during {}", context);
+        }
+        else {
+            AssertFmt(false, "wl_display_flush failed during {} with errno={}", context, errno);
+        }
+    }
+}
 
 void registerGlobal(void* userData, wl_registry* registry,
                     uint32_t name, const char* interface, uint32_t version) {
@@ -47,6 +59,12 @@ void registerGlobal(void* userData, wl_registry* registry,
         i32 compositorSupported = x.version; // if this can be negative I will stop using wayland.
         u32 bindVersion = core::core_min(version, u32(compositorSupported));
         return bindVersion;
+    };
+
+    auto pickFormatCb = [](void*, wl_shm*, uint32_t format) {
+        if (format == WL_SHM_FORMAT_ARGB8888) {
+            g_pixelFormat = PixelFormat::ARGB8888;
+        }
     };
 
     if (core::sv(interface).eq("wl_seat")) {
@@ -73,6 +91,10 @@ void registerGlobal(void* userData, wl_registry* registry,
             wl_registry_bind(registry, name, &wl_shm_interface, pickVersion(wl_shm_interface))
         );
         Panic(g_shm, "Failed to bind g_shm");
+
+        g_shmListener.format = pickFormatCb;
+        i32 ret = wl_shm_add_listener(g_shm, &g_shmListener, nullptr);
+        PanicFmt(ret == 0, "wl_shm_add_listener exited with {}", ret);
     }
     else {
         // Interfaces that are not used by the application:
@@ -104,7 +126,7 @@ void xdgSurfaceConfigure(void*, xdg_surface *xdgSurface, uint32_t serial) {
 
     xdg_surface_ack_configure(xdgSurface, serial);
 
-    if (g_initSoftwareRenderer) {
+    if (g_useSoftwareRenderer) {
         i32 ret;
 
         i32 size = g_windowStride * g_windowHeight;
@@ -129,7 +151,7 @@ void xdgSurfaceConfigure(void*, xdg_surface *xdgSurface, uint32_t serial) {
         g_buffer = wl_shm_pool_create_buffer(pool, 0,
             g_windowWidth, g_windowHeight, g_windowStride,
             WL_SHM_FORMAT_ARGB8888);
-        Panic(pool, "wl_shm_pool_create_buffer failed to create buffer.");
+        Panic(g_buffer, "wl_shm_pool_create_buffer failed to create buffer.");
 
         // First time add the release buffer listener to the render state:
         g_bufferListener.release = releaseBuffer;
@@ -140,13 +162,15 @@ void xdgSurfaceConfigure(void*, xdg_surface *xdgSurface, uint32_t serial) {
         wl_surface_attach(g_surface, g_buffer, 0, 0);
         wl_surface_damage_buffer(g_surface, 0, 0, g_windowWidth, g_windowHeight);
         wl_surface_commit(g_surface);
+        ret = wl_display_flush(g_display);
+        handleDisplayFlushError(ret, "buffer commit");
     }
 }
 
 } // namespace
 
 void platformInit() {
-    core::loggerSetTag(i32(LoggerTags::T_PLATFORM), "WAYLAND_LINUX_PLATFORM"_sv);
+    Panic(core::loggerSetTag(i32(LoggerTags::T_PLATFORM), "WAYLAND_LINUX_PLATFORM"_sv));
     LOG_INFO_BLOCK_INIT_SECTION(LoggerTags::T_PLATFORM, "Platform");
 
     i32 ret;
@@ -158,7 +182,7 @@ void platformInit() {
     // Setup the registry
     {
         g_registry = wl_display_get_registry(g_display);
-        Panic(g_display, "Failed to get registry for Wayland dispaly");
+        Panic(g_registry, "Failed to get registry for Wayland display");
 
         g_registerListener.global = registerGlobal;
         g_registerListener.global_remove = registerGlobalRemove;
@@ -166,15 +190,22 @@ void platformInit() {
         PanicFmt(ret == 0, "wl_registry_add_listener exited with {}", ret);
 
         ret = wl_display_roundtrip(g_display);  // Block until all pending request are processed
-        PanicFmt(ret > 0, "wl_display_roundtrip exited with {}", ret);
+        PanicFmt(ret >= 0, "wl_display_roundtrip exited with {}", ret);
 
         logInfoTagged(LoggerTags::T_PLATFORM, "Registry initialized.");
     }
 
+    Panic(g_compositor, "Compositor did not advertise wl_compositor");
+    Panic(g_xdgWmBase, "Compositor did not advertise xdg_wm_base");
+    Panic(g_shm, "Compositor did not advertise wl_shm");
+    Panic(g_seat, "Compositor did not advertise wl_seat");
+    Panic(g_pixelFormat == PixelFormat::UNDEFINED, "Did not find supported pixel format");
+
     // Setup ping/pong
     Panic(g_xdgWmBase, "xdgWmBase was not initialized in registerGlobal");
     g_xdgWmBaseListener.ping = xdgWmBasePing;
-    xdg_wm_base_add_listener(g_xdgWmBase, &g_xdgWmBaseListener, nullptr);
+    ret = xdg_wm_base_add_listener(g_xdgWmBase, &g_xdgWmBaseListener, nullptr);
+    PanicFmt(ret == 0, "xdg_wm_base_add_listener exited with {}", ret);
     logInfoTagged(LoggerTags::T_PLATFORM, "XDG WmBase initialized.");
 }
 
@@ -258,15 +289,15 @@ void platformOpenOSWindow(const OpenWindowInfo& openInfo) {
     g_windowWidth = openInfo.width;
     g_windowHeight = openInfo.height;
     g_windowStride = g_windowWidth * 4;
-    g_initSoftwareRenderer = openInfo.initSoftwareRendering;
+    g_useSoftwareRenderer = openInfo.useSoftwareRendering;
 
     // Create the surface
     g_surface = wl_compositor_create_surface(g_compositor);
     Panic(g_surface, "wl_compositor_create_surface failed to create surface");
     g_xdgSurface = xdg_wm_base_get_xdg_surface(g_xdgWmBase, g_surface);
-    Panic(g_surface, "xdg_wm_base_get_xdg_surface failed to create surface");
+    Panic(g_xdgSurface, "xdg_wm_base_get_xdg_surface failed to create surface");
     g_xdgToplevel = xdg_surface_get_toplevel(g_xdgSurface);
-    Panic(g_surface, "xdg_surface_get_toplevel failed to create surface");
+    Panic(g_xdgToplevel, "xdg_surface_get_toplevel failed to create surface");
 
     xdg_toplevel_set_title(g_xdgToplevel, windowName);
 
@@ -276,40 +307,56 @@ void platformOpenOSWindow(const OpenWindowInfo& openInfo) {
 
     wl_surface_commit(g_surface);
     ret = wl_display_roundtrip(g_display);
-    PanicFmt(ret > 0, "wl_display_roundtrip exited with {}", ret);
+    PanicFmt(ret >= 0, "wl_display_roundtrip exited with {}", ret);
     logInfoTagged(LoggerTags::T_PLATFORM, "Surface created");
 }
 
 void platformPollEvents() {
     // Drain existing events
-    while (wl_display_prepare_read(g_display) != 0)
-        wl_display_dispatch_pending(g_display);
+    while (wl_display_prepare_read(g_display) != 0) {
+        [[maybe_unused]] i32 ret = wl_display_dispatch_pending(g_display);
+        AssertFmt(ret >= 0, "wl_display_dispatch_pending exited with {}", ret);
+    }
 
     // Poll the Wayland socket without waiting
     struct pollfd pfd = { wl_display_get_fd(g_display), POLLIN, 0 };
     i32 pollres = poll(&pfd, 1, 0); // timeout = 0 → never block
 
     if (pollres > 0) {
-        wl_display_read_events(g_display);
+        [[maybe_unused]] i32 ret = wl_display_read_events(g_display);
+        AssertFmt(ret >= 0, "wl_display_read_events exited with {}", ret);
     }
     else {
         wl_display_cancel_read(g_display);
     }
 
-    wl_display_dispatch_pending(g_display);
-    wl_display_flush(g_display);
+    {
+        [[maybe_unused]] i32 ret = wl_display_dispatch_pending(g_display);
+        AssertFmt(ret >= 0, "wl_display_dispatch_pending exited with {}", ret);
+    }
+
+    {
+        i32 ret = wl_display_flush(g_display);
+        handleDisplayFlushError(ret, "event loop");
+    }
 }
 
 void platformCreateSoftRendCtx(SoftwareRenderingContext& out) {
     // Sanity check:
     Assert(g_buffer && g_display && g_surface && g_windowWidth && g_windowHeight && g_mappedData);
+    Assert(g_useSoftwareRenderer, "useSoftwareRenderer must be true on platformOpenOSWindow");
 
     out.bufferIsReady = &g_bufferIsReady;
-    out.buffer = g_buffer;
     out.display = g_display;
     out.surface = g_surface;
-    out.frameBufferWidth = g_windowWidth;
-    out.frameBufferHeight = g_windowHeight;
-    out.memoryMappedArea = g_mappedData;
-}
 
+    FrameBuffer fb1 = {
+        .width = g_windowWidth,
+        .height = g_windowHeight,
+        .pixelFormat = g_pixelFormat,
+        .wlBuffer = g_buffer,
+        .data = g_mappedData,
+    };
+
+    out.frameBuffers.push(fb1);
+}

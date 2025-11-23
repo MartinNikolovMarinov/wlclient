@@ -9,6 +9,7 @@
 
 #include "renderer.h"
 #include "platform.h"
+#include "wayland_platform.h"
 #include "logger_config.h"
 
 // FIXME: A lot of error handling is still missing.
@@ -17,44 +18,37 @@ namespace {
 
 SoftwareRenderingContext g_sharedRenderCtx;
 
+FrameBuffer& getFrameBuffer();
+
 } // namespace
 
 void rendererInit() {
-    core::loggerSetTag(i32(LoggerTags::T_RENDERER), "WAYLAND_RENDERER"_sv);
+    Panic(core::loggerSetTag(i32(LoggerTags::T_RENDERER), "WAYLAND_RENDERER"_sv));
     LOG_INFO_BLOCK_INIT_SECTION(LoggerTags::T_RENDERER, "Software Renderer");
 
     platformCreateSoftRendCtx(g_sharedRenderCtx);
+
+    for (addr_size i = 0; i < g_sharedRenderCtx.frameBuffers.len(); i++) {
+        Panic(g_sharedRenderCtx.frameBuffers[i].pixelFormat == PixelFormat::ARGB8888,
+            "The only currently supported pixel format is ARGB8888");
+    }
 }
 
-void renderFrame() {
+bool renderFrame() {
     bool& bufferIsReady = *g_sharedRenderCtx.bufferIsReady;
     auto surface = g_sharedRenderCtx.surface;
-    auto buffer = g_sharedRenderCtx.buffer;
     auto display = g_sharedRenderCtx.display;
-    auto width = g_sharedRenderCtx.frameBufferWidth;
-    auto height = g_sharedRenderCtx.frameBufferHeight;
-    auto memoryMappedArea = g_sharedRenderCtx.memoryMappedArea;
-
-    constexpr i32 BITS_PER_PIXEL = 4; // TODO2: move somewhere.
-    i32 size = width * height * BITS_PER_PIXEL;
+    auto buffer = getFrameBuffer().wlBuffer;
+    auto width = getFrameBuffer().width;
+    auto height = getFrameBuffer().height;
 
     if (!bufferIsReady) {
-        logInfoTagged(LoggerTags::T_RENDERER, "Buffer not ready.");
-        return;
+        logWarnTagged(LoggerTags::T_RENDERER, "Buffer not ready.");
+        return false;
     }
     bufferIsReady = false;
 
     logTraceTagged(LoggerTags::T_RENDERER, "Render Frame.");
-
-    // Render Frame
-    static u16 tmpCounter = 1;
-    for (i32 i = 0; i < size; i+=4) {
-        memoryMappedArea[i] = u8(tmpCounter%255); // blue
-        memoryMappedArea[i+1] = u8((tmpCounter/2)%255); // green
-        memoryMappedArea[i+2] = u8((tmpCounter/3)%255); // red
-        memoryMappedArea[i+3] = u8(255); // alpha
-    }
-    tmpCounter++;
 
     // Binds a wl_buffer to a surface for the next frame. The buffer holds the pixel data you want displayed. The attach
     // itself does nothing visible until you commit:
@@ -68,9 +62,50 @@ void renderFrame() {
     // Finalizes the pending state changes (attach, damage, etc.). Once you commit, the compositor treats that buffer as
     // the new frame and later releases it when it’s no longer in use.
     wl_display_flush(display);
+
+    return true;
 }
 
 void rendererShutdown() {
     LOG_INFO_BLOCK_SHUTDOWN(LoggerTags::T_RENDERER, "Software Renderer");
     g_sharedRenderCtx = {};
 }
+
+void rendererClearScreen(Color color) {
+    auto fb = getFrameBuffer();
+    auto width = fb.width;
+    auto height = fb.height;
+    renderDirectRect(color, 0, 0, width, height);
+}
+
+void renderDirectRect(Color color, i32 x, i32 y, i32 width, i32 height) {
+    auto fb = getFrameBuffer();
+    u8 r = color.r;
+    u8 g = color.g;
+    u8 b = color.b;
+    u8 a = color.a;
+    auto frameBufferWidth = fb.width;
+    auto pixelFormat = fb.pixelFormat;
+    auto bytesPerPixel = getBytesPerPixel(pixelFormat);
+    auto memoryMappedArea = fb.data;
+
+    for (i32 row = y; row < y + height; ++row) {
+        for (i32 col = x; col < x + width; ++col) {
+            i32 offset = (row * frameBufferWidth + col) * bytesPerPixel;
+            // WL_SHM_FORMAT_ARGB8888 is little-endian → BGRA byte order in memory.
+            memoryMappedArea[offset + 0] = b;
+            memoryMappedArea[offset + 1] = g;
+            memoryMappedArea[offset + 2] = r;
+            memoryMappedArea[offset + 3] = a;
+        }
+    }
+}
+
+namespace {
+
+FrameBuffer& getFrameBuffer() {
+    // TODO: implement double/tripple buffering
+    return g_sharedRenderCtx.frameBuffers.first();
+}
+
+} // namespace

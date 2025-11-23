@@ -84,6 +84,7 @@ macro(common_target_setup target)
     )
     target_compile_definitions(${target} PUBLIC
         "USE_ANSI_LOGGING=$<BOOL:${USE_ANSI_LOGGING}>"
+        "WAYLAND_APP_DEBUG=$<BOOL:${WAYLAND_APP_DEBUG}>"
     )
     wayland_gui_target_set_default_flags(${target} ${WAYLAND_APP_DEBUG} false)
 endmacro()

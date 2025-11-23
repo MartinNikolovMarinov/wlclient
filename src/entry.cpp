@@ -23,7 +23,7 @@ void entryInit(i32 argc, const char** argv) {
     (void)argv;
 
     coreInit();
-    core::loggerSetTag(i32(LoggerTags::T_ENTRY), "ENTRY"_sv);
+    Panic(core::loggerSetTag(i32(LoggerTags::T_ENTRY), "ENTRY"_sv));
 
     LOG_INFO_BLOCK_INIT_SECTION(LoggerTags::T_ENTRY, "Application");
 
@@ -31,12 +31,40 @@ void entryInit(i32 argc, const char** argv) {
     info.name = "Example Window";
     info.width = 600;
     info.height = 600;
-    info.initSoftwareRendering = true;
+    info.useSoftwareRendering = true;
 
     platformInit();
     platformOpenOSWindow(info);
     rendererInit();
 }
+
+namespace {
+
+bool g_lastFrameRendered = false;
+
+void setupScene() {
+    if (!g_lastFrameRendered) return;
+
+    static u16 tmpCounter = 1;
+
+    u8 r = u8((tmpCounter/3)%255);
+    u8 g = u8((tmpCounter/2)%255);
+    u8 b = u8(tmpCounter%255);
+    u8 a = u8(255);
+
+    tmpCounter++;
+
+    rendererClearScreen({.r = r, .g = g, .b = b, .a = a});
+
+    i32 tmpWidth = 600;
+    i32 tmpHeight = 600;
+    renderDirectRect({.r = 255, .g = 0, .b = 0, .a = 255}, 0, 0, 50, 50);
+    renderDirectRect({.r = 0, .g = 255, .b = 0, .a = 255}, tmpWidth - 50, tmpHeight - 50, 50, 50);
+    renderDirectRect({.r = 0, .g = 0, .b = 255, .a = 255}, tmpWidth - 50, 0, 50, 50);
+    renderDirectRect({.r = 0, .g = 255, .b = 255, .a = 255}, 0, tmpHeight - 50, 50, 50);
+}
+
+} // namespace
 
 i32 entryMain() {
     u64 start = core::getPerfCounter();
@@ -48,15 +76,16 @@ i32 entryMain() {
     }
 
     platformPollEvents();
-    renderFrame();
+    setupScene();
+    g_lastFrameRendered = renderFrame();
 
     u64 end = core::getPerfCounter();
     f64 frameTimeMs = (f64(end - start) / f64(g_cpuFreq)) * 1000.0;
     f64 ahead = 1000.0/FRAME_RATE_CAP - frameTimeMs;
 
     if (ahead > 0) {
-        logInfoTagged(LoggerTags::T_ENTRY, "fps: {:f.4}, frame time: {:f.4}ms", f64(1000/frameTimeMs), frameTimeMs);
-        logInfoTagged(LoggerTags::T_ENTRY, "ahead: {:f.4}ms", ahead);
+        logDebugTagged(LoggerTags::T_ENTRY, "fps: {:f.4}, frame time: {:f.4}ms", f64(1000/frameTimeMs), frameTimeMs);
+        logDebugTagged(LoggerTags::T_ENTRY, "ahead: {:f.4}ms", ahead);
         core::threadingSleep(u64(ahead));
     }
     else {
