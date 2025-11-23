@@ -26,7 +26,6 @@ xdg_wm_base_listener g_xdgWmBaseListener = {};
 
 wl_compositor *g_compositor = nullptr;
 wl_surface* g_surface = nullptr;
-wl_keyboard* g_keyboard = nullptr;
 xdg_surface* g_xdgSurface = nullptr;
 xdg_toplevel* g_xdgToplevel = nullptr;
 xdg_surface_listener g_xdgSurfaceListener = {};
@@ -131,6 +130,10 @@ void xdgSurfaceConfigure(void*, xdg_surface *xdgSurface, uint32_t serial) {
     xdg_surface_ack_configure(xdgSurface, serial);
 
     if (g_useSoftwareRenderer) {
+        // TODO: This code needs to be a function and it needs to recreate the buffer
+        //       every time that the window is resized, so this is temporary code !
+        //       It also needs to use double/triple buffering.
+
         i32 ret;
 
         i32 size = g_windowStride * g_windowHeight;
@@ -147,6 +150,7 @@ void xdgSurfaceConfigure(void*, xdg_surface *xdgSurface, uint32_t serial) {
         );
         PanicFmt(g_mappedData != MAP_FAILED, "Failed to memory map the anonymous file, err_code={}", errno);
 
+        // TODO: might want to not do this in release builds:
         core::memset(g_mappedData, u8(0x00), addr_size(size));
 
         wl_shm_pool* pool = wl_shm_create_pool(g_shm, fd, i32(size));
@@ -162,6 +166,13 @@ void xdgSurfaceConfigure(void*, xdg_surface *xdgSurface, uint32_t serial) {
         g_bufferIsReady = true;
         ret = wl_buffer_add_listener(g_buffer, &g_bufferListener, &g_bufferIsReady);
         PanicFmt(ret == 0, "wl_buffer_add_listener exited with {}", ret);
+
+        // Hint to the compositor that the window will be non-transperant:
+        wl_region* emptyRegion = wl_compositor_create_region(g_compositor);
+        Panic(emptyRegion, "wl_compositor_create_region failed");
+        wl_region_add(emptyRegion, 0, 0, g_windowWidth, g_windowHeight);
+        wl_surface_set_opaque_region(g_surface, emptyRegion);
+        wl_region_destroy(emptyRegion);
 
         wl_surface_attach(g_surface, g_buffer, 0, 0);
         wl_surface_damage_buffer(g_surface, 0, 0, g_windowWidth, g_windowHeight);

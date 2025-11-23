@@ -10,6 +10,11 @@
 #include <wayland-client.h>
 #include "xdg-shell-client-protocol.h"
 
+#include <core_compiler.h>
+
+PRAGMA_WARNING_PUSH
+PRAGMA_WARNING_SUPPRESS_ALL
+
 /* Shared memory support code */
 static void
 randname(char *buf)
@@ -201,3 +206,5 @@ main(int argc, char *argv[])
 
     return 0;
 }
+
+PRAGMA_WARNING_POP
