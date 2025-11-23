@@ -29,7 +29,7 @@ bool g_canRender = true;
 
 void rendererInit() {
     Panic(core::loggerSetTag(i32(LoggerTags::T_RENDERER), "WAYLAND_RENDERER"_sv));
-    core::loggerSetLevel(core::LogLevel::L_TRACE, LoggerTags::T_RENDERER);
+    core::loggerSetLevel(core::LogLevel::L_INFO, LoggerTags::T_RENDERER);
 
     LOG_INFO_BLOCK_INIT_SECTION(LoggerTags::T_RENDERER, "Software Renderer");
 

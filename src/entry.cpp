@@ -1,5 +1,3 @@
-#include <cmath>
-
 #include "entry.h"
 #include "core_init.h"
 
@@ -37,6 +35,19 @@ void entryInit(i32 argc, const char** argv) {
     info.height = 600;
     info.useSoftwareRendering = true;
 
+    // TODO: I should move these into a very light event bus.
+    Panic(core::loggerSetTag(LoggerTags::T_USER_INPUT, "ENTRY"_sv));
+    core::loggerSetLevel(core::LogLevel::L_DEBUG, LoggerTags::T_USER_INPUT);
+    info.userInputEvents = {
+        .mouseClickCallback = [](bool isPress, MouseButton button, i32 x, i32 y, KeyboardModifiers mods) {
+            logDebugTagged(LoggerTags::T_USER_INPUT, "isPress={}, button={}, x={}, y={}, keyModifiers={}",
+                isPress, mouseButtonToCstr(button), x, y, keyModifiersToCstr(mods));
+        },
+        .mouseMoveCallback = [](i32 x, i32 y) {
+            logDebugTagged(LoggerTags::T_USER_INPUT, "x={}, y={}", x, y);
+        },
+    };
+
     platformInit();
     platformOpenOSWindow(info);
     rendererInit();
@@ -50,9 +61,9 @@ void setupScene() {
     // Time-based values, independent of frame rate.
     f64 tSeconds = core::getPerfCounter() / core::CORE_SECOND;
     // Slow moving color changes.
-    u8 r = u8(std::fmod(tSeconds * 10.0, 255.0));
-    u8 g = u8(std::fmod(tSeconds * 7.0, 255.0));
-    u8 b = u8(std::fmod(tSeconds * 5.0, 255.0));
+    u8 r = u8(core::fmod(tSeconds * 10.0, 255.0));
+    u8 g = u8(core::fmod(tSeconds * 7.0, 255.0));
+    u8 b = u8(core::fmod(tSeconds * 5.0, 255.0));
     u8 a = u8(255);
 
     rendererClearScreen({.r = r, .g = g, .b = b, .a = a});
@@ -60,8 +71,8 @@ void setupScene() {
     i32 tmpWidth = 600;
     i32 tmpHeight = 600;
     f64 step = tSeconds * 50.0;
-    i32 xx = i32(std::fmod(step, f64(tmpWidth)));
-    i32 yy = i32(std::fmod(step, f64(tmpHeight)));
+    i32 xx = i32(core::fmod(step, f64(tmpWidth)));
+    i32 yy = i32(core::fmod(step, f64(tmpHeight)));
 
     renderDirectRect({.r = 255, .g = 0, .b = 0, .a = 255}, xx, 0, 50, 50);
     renderDirectRect({.r = 0, .g = 255, .b = 0, .a = 255}, (tmpWidth - 50) - xx, tmpHeight - 50, 50, 50);

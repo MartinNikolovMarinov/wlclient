@@ -1,6 +1,7 @@
 #include <unistd.h>
 #include <poll.h>
 #include <sys/mman.h>
+#include <linux/input-event-codes.h>
 
 #include <wayland-client-core.h>
 #include <wayland-client-protocol.h>
@@ -18,11 +19,26 @@ bool g_useSoftwareRenderer = false;
 
 wl_display *g_display = nullptr;
 wl_registry *g_registry = nullptr;
-wl_seat *g_seat = nullptr;
 wl_registry_listener g_registerListener = {};
+
+wl_seat *g_seat = nullptr;
+wl_seat_listener g_seatListener = {};
+const char* g_seatName = nullptr;
+
+wl_pointer *g_pointer = nullptr;
+wl_pointer_listener g_pointerListener = {};
+
+// Latest pointer position in surface-local coordinates (integer pixels).
+i32 g_pointerX = 0;
+i32 g_pointerY = 0;
+
+wl_keyboard *g_keyboard = nullptr;
+wl_keyboard_listener g_keyboardListener = {};
 
 xdg_wm_base* g_xdgWmBase = nullptr;
 xdg_wm_base_listener g_xdgWmBaseListener = {};
+
+UserInputEvents g_userInputEventHandlers = {};
 
 wl_compositor *g_compositor = nullptr;
 wl_surface* g_surface = nullptr;
@@ -42,145 +58,31 @@ i32 g_windowWidth = 0;
 i32 g_windowHeight = 0;
 i32 g_windowStride = 0;
 
-inline void handleDisplayFlushError(i32 errCode, const char* context) {
-    if (errCode < 0) {
-        if (errno == EAGAIN) {
-            logDebugTagged(LoggerTags::T_PLATFORM, "wl_display_flush would block (EAGAIN) during {}", context);
-        }
-        else {
-            AssertFmt(false, "wl_display_flush failed during {} with errno={}", context, errno);
-        }
-    }
-}
+inline void handleDisplayFlushError(i32 errCode, const char* context);
 
-void xdgWmBasePing(void*, xdg_wm_base *xdgWmBase, uint32_t serial) {
-    logInfoTagged(LoggerTags::T_PLATFORM, "Ping received serial: {}", serial);
-    xdg_wm_base_pong(xdgWmBase, serial);
-}
+void seatCapabilities(void*, wl_seat *seat, u32 capabilities);
+void seatName(void*, struct wl_seat * seat, const char *name);
 
-void registerGlobal(void*, wl_registry* registry, uint32_t name, const char* interface, uint32_t version) {
-    auto pickVersion = [&version](auto& x) {
-        i32 compositorSupported = x.version; // if this can be negative I will stop using wayland.
-        u32 bindVersion = core::core_min(version, u32(compositorSupported));
-        return bindVersion;
-    };
+void registerGlobal(void*, wl_registry* registry, u32 name, const char* interface, u32 version);
+void registerGlobalRemove(void*, wl_registry*, u32 name);
 
-    auto pickFormatCb = [](void*, wl_shm*, uint32_t format) {
-        if (format == WL_SHM_FORMAT_ARGB8888) {
-            g_pixelFormat = PixelFormat::ARGB8888;
-        }
-    };
+void releaseBuffer(void *data, struct wl_buffer *);
 
-    if (core::sv(interface).eq("wl_seat")) {
-        g_seat = reinterpret_cast<wl_seat*>(
-            wl_registry_bind(registry, name, &wl_seat_interface, pickVersion(wl_seat_interface))
-        );
-        Panic(g_seat, "Failed to bind localSeat");
-    }
-    else if (core::sv(interface).eq("xdg_wm_base")) {
-        g_xdgWmBase = reinterpret_cast<xdg_wm_base*>(
-            wl_registry_bind(registry, name, &xdg_wm_base_interface, pickVersion(xdg_wm_base_interface))
-        );
-        Panic(g_xdgWmBase, "Failed to bind g_xdgWmBase");
+void xdgWmBasePing(void*, xdg_wm_base *xdgWmBase, u32 serial);
 
-        // Setup ping handler
-        g_xdgWmBaseListener.ping = xdgWmBasePing;
-        i32 ret = xdg_wm_base_add_listener(g_xdgWmBase, &g_xdgWmBaseListener, nullptr);
-        PanicFmt(ret == 0, "xdg_wm_base_add_listener exited with {}", ret);
-    }
-    else if (core::sv(interface).eq("wl_compositor")) {
-        g_compositor = reinterpret_cast<wl_compositor*>(
-            wl_registry_bind(registry, name, &wl_compositor_interface, pickVersion(wl_compositor_interface))
-        );
-        Panic(g_compositor, "Failed to bind g_compositor");
-    }
-    else if (core::sv(interface).eq("wl_shm")) {
-        g_shm = reinterpret_cast<wl_shm*>(
-            wl_registry_bind(registry, name, &wl_shm_interface, pickVersion(wl_shm_interface))
-        );
-        Panic(g_shm, "Failed to bind g_shm");
+void xdgSurfaceConfigure(void*, xdg_surface *xdgSurface, u32 serial);
 
-        g_shmListener.format = pickFormatCb;
-        i32 ret = wl_shm_add_listener(g_shm, &g_shmListener, nullptr);
-        PanicFmt(ret == 0, "wl_shm_add_listener exited with {}", ret);
-    }
-    else {
-        // Interfaces that are not used by the application:
-        logDebugTagged(LoggerTags::T_PLATFORM, "Register Global unhandled interfaces: {}", interface);
-        return;
-    }
-
-    logInfoTagged(LoggerTags::T_PLATFORM, "Bound interface: {}", interface);
-}
-
-void registerGlobalRemove(void*, wl_registry*, uint32_t name) {
-    logWarnTagged(LoggerTags::T_PLATFORM, "Register Global Remove called for objId: {}", name);
-    // TODO2: I might want to handle this just in case.
-}
-
-void releaseBuffer(void *data, struct wl_buffer *) {
-    logTraceTagged(LoggerTags::T_PLATFORM, "Buffer Released.");
-    bool* ready = static_cast<bool*>(data);
-    *ready = true;
-}
-
-void xdgSurfaceConfigure(void*, xdg_surface *xdgSurface, uint32_t serial) {
-    logInfoTagged(LoggerTags::T_PLATFORM, "Xdg Surface Configure Event serial: {}", serial);
-
-    xdg_surface_ack_configure(xdgSurface, serial);
-
-    if (g_useSoftwareRenderer) {
-        // TODO: This code needs to be a function and it needs to recreate the buffer
-        //       every time that the window is resized, so this is temporary code !
-        //       It also needs to use double/triple buffering.
-
-        i32 ret;
-
-        i32 size = g_windowStride * g_windowHeight;
-
-        i32 fd = memfd_create("tmp", 0);
-        defer { close(fd); };
-        PanicFmt(fd >= 0, "Failed to create an anonymous file to store the backing pixels buffer, err_code={}", errno);
-        ret = ftruncate(fd, addr_off(size));
-        PanicFmt(ret == 0, "Failed to truncate the anonymous file to size={}, err_code={}", size, errno);
-
-        // Map it in the virtual address space.
-        g_mappedData = reinterpret_cast<u8*>(
-            mmap(nullptr, addr_size(size), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)
-        );
-        PanicFmt(g_mappedData != MAP_FAILED, "Failed to memory map the anonymous file, err_code={}", errno);
-
-        // TODO: might want to avoid doing this in release builds:
-        core::memset(g_mappedData, u8(0x00), addr_size(size));
-
-        wl_shm_pool* pool = wl_shm_create_pool(g_shm, fd, i32(size));
-        Panic(pool, "wl_shm_create_pool failed to create pool.");
-        defer { wl_shm_pool_destroy(pool); };
-        g_buffer = wl_shm_pool_create_buffer(pool, 0,
-            g_windowWidth, g_windowHeight, g_windowStride,
-            WL_SHM_FORMAT_ARGB8888);
-        Panic(g_buffer, "wl_shm_pool_create_buffer failed to create buffer.");
-
-        // First time add the release buffer listener to the render state:
-        g_bufferListener.release = releaseBuffer;
-        g_bufferIsReady = true;
-        ret = wl_buffer_add_listener(g_buffer, &g_bufferListener, &g_bufferIsReady);
-        PanicFmt(ret == 0, "wl_buffer_add_listener exited with {}", ret);
-
-        // Hint to the compositor that the window will be non-transperant:
-        wl_region* emptyRegion = wl_compositor_create_region(g_compositor);
-        Panic(emptyRegion, "wl_compositor_create_region failed");
-        wl_region_add(emptyRegion, 0, 0, g_windowWidth, g_windowHeight);
-        wl_surface_set_opaque_region(g_surface, emptyRegion);
-        wl_region_destroy(emptyRegion);
-
-        wl_surface_attach(g_surface, g_buffer, 0, 0);
-        wl_surface_damage_buffer(g_surface, 0, 0, g_windowWidth, g_windowHeight);
-        wl_surface_commit(g_surface);
-        ret = wl_display_flush(g_display);
-        handleDisplayFlushError(ret, "buffer commit");
-    }
-}
+void pointerEnter(void* data, wl_pointer* pointer, u32 serial, wl_surface* surface, wl_fixed_t sx, wl_fixed_t sy);
+void pointerLeave(void* data, wl_pointer* pointer, u32 serial, wl_surface* surface);
+void pointerMotion(void* data, wl_pointer* pointer, u32 time, wl_fixed_t sx, wl_fixed_t sy);
+void pointerButton(void* data, wl_pointer* pointer, u32 serial, u32 time, u32 button, u32 state);
+void pointerAxis(void* data, wl_pointer* pointer, u32 time, u32 axis, wl_fixed_t value);
+void pointerFrame(void* data, wl_pointer* pointer);
+void pointerAxisSource(void* data, wl_pointer* pointer, u32 axis_source);
+void pointerAxisStop(void* data, wl_pointer* pointer, u32 time, u32 axis);
+void pointerAxisDiscrete(void* data, wl_pointer* pointer, u32 axis, i32 discrete);
+void pointerAxisValue120(void* data, wl_pointer* pointer, u32 axis, i32 value120);
+void pointerAxisRelativeDirection(void* data, wl_pointer* pointer, u32 axis, u32 direction);
 
 } // namespace
 
@@ -220,6 +122,18 @@ void platformInit() {
 
 void platformShutdown() {
     LOG_INFO_BLOCK_SHUTDOWN(LoggerTags::T_PLATFORM, "Platform");
+
+    if (g_keyboard) {
+        wl_keyboard_destroy(g_keyboard);
+        g_keyboard = nullptr;
+        logInfoTagged(LoggerTags::T_PLATFORM, "Keyboard destroyed.");
+    }
+
+    if (g_pointer) {
+        wl_pointer_release(g_pointer);
+        g_pointer = nullptr;
+        logInfoTagged(LoggerTags::T_PLATFORM, "Mouse destroyed.");
+    }
 
     if (g_seat) {
         wl_seat_destroy(g_seat);
@@ -299,6 +213,7 @@ void platformOpenOSWindow(const OpenWindowInfo& openInfo) {
     g_windowHeight = openInfo.height;
     g_windowStride = g_windowWidth * 4;
     g_useSoftwareRenderer = openInfo.useSoftwareRendering;
+    g_userInputEventHandlers = openInfo.userInputEvents;
 
     // Create the surface
     g_surface = wl_compositor_create_surface(g_compositor);
@@ -369,3 +284,285 @@ void platformCreateSoftRendCtx(SoftwareRenderingContext& out) {
 
     out.frameBuffers.push(fb1);
 }
+
+namespace {
+
+inline void handleDisplayFlushError(i32 errCode, const char* context) {
+    if (errCode < 0) {
+        if (errno == EAGAIN) {
+            logDebugTagged(LoggerTags::T_PLATFORM, "wl_display_flush would block (EAGAIN) during {}", context);
+        }
+        else {
+            AssertFmt(false, "wl_display_flush failed during {} with errno={}", context, errno);
+        }
+    }
+}
+
+void xdgWmBasePing(void*, xdg_wm_base *xdgWmBase, u32 serial) {
+    logDebugTagged(LoggerTags::T_PLATFORM, "Ping received serial: {}", serial);
+    xdg_wm_base_pong(xdgWmBase, serial);
+}
+
+void seatCapabilities(void*, wl_seat *seat, u32 capabilities) {
+    if (seat == g_seat) {
+        logInfo("Capabilities: {}", capabilities);
+
+        bool supportsKeyboard = capabilities & wl_seat_capability::WL_SEAT_CAPABILITY_KEYBOARD;
+        bool supportsMouse = capabilities & wl_seat_capability::WL_SEAT_CAPABILITY_POINTER;
+
+        if (!g_pointer && supportsMouse) {
+            g_pointer = wl_seat_get_pointer(g_seat);
+            Panic(g_pointer, "failed to get pointer from seat.");
+
+            g_pointerListener.enter = pointerEnter;
+            g_pointerListener.leave = pointerLeave;
+            g_pointerListener.motion = pointerMotion;
+            g_pointerListener.button = pointerButton;
+            g_pointerListener.axis = pointerAxis;
+            g_pointerListener.frame = pointerFrame;
+            g_pointerListener.axis_source = pointerAxisSource;
+            g_pointerListener.axis_stop = pointerAxisStop;
+            g_pointerListener.axis_discrete = pointerAxisDiscrete;
+            g_pointerListener.axis_value120 = pointerAxisValue120;
+            g_pointerListener.axis_relative_direction = pointerAxisRelativeDirection;
+
+            wl_pointer_add_listener(g_pointer, &g_pointerListener, nullptr);
+
+            logInfo("Registered mouse successfully");
+        }
+        else if (g_pointer) {
+            wl_pointer_release(g_pointer);
+            g_pointer = nullptr;
+            logInfo("Pointer capability dropped; pointer released.");
+        }
+
+        if (!g_keyboard && supportsKeyboard) {
+            g_keyboard = wl_seat_get_keyboard(g_seat);
+            Panic(g_keyboard, "failed to get pointer from seat.");
+
+            // keyboard callbacks
+
+            // g_keyboardListener.
+            // wl_keyboard_add_listener(g_keyboard, &g_keyboardListener, nullptr);
+
+            logInfo("Registered keyboard successfully");
+        }
+        else if (g_keyboard) {
+            auto ptr = g_keyboard;
+            if (g_keyboard) g_keyboard = nullptr;
+            wl_keyboard_release(ptr);
+        }
+    }
+}
+
+void seatName(void*, struct wl_seat * seat, const char *name) {
+    if (seat == g_seat) {
+        g_seatName = name;
+        logInfo("Seat name: {}", g_seatName);
+    }
+}
+
+void registerGlobal(void*, wl_registry* registry, u32 name, const char* interface, u32 version) {
+    auto pickVersion = [&version](auto& x) {
+        i32 compositorSupported = x.version; // if this can be negative I will stop using wayland.
+        u32 bindVersion = core::core_min(version, u32(compositorSupported));
+        return bindVersion;
+    };
+
+    auto pickFormatCb = [](void*, wl_shm*, u32 format) {
+        if (format == WL_SHM_FORMAT_ARGB8888) {
+            g_pixelFormat = PixelFormat::ARGB8888;
+        }
+    };
+
+    if (core::sv(interface).eq("wl_seat")) {
+        g_seat = reinterpret_cast<wl_seat*>(
+            wl_registry_bind(registry, name, &wl_seat_interface, pickVersion(wl_seat_interface))
+        );
+        Panic(g_seat, "Failed to bind localSeat");
+
+        g_seatListener.capabilities = seatCapabilities;
+        g_seatListener.name = seatName;
+        wl_seat_add_listener(g_seat, &g_seatListener, nullptr);
+    }
+    else if (core::sv(interface).eq("xdg_wm_base")) {
+        g_xdgWmBase = reinterpret_cast<xdg_wm_base*>(
+            wl_registry_bind(registry, name, &xdg_wm_base_interface, pickVersion(xdg_wm_base_interface))
+        );
+        Panic(g_xdgWmBase, "Failed to bind g_xdgWmBase");
+
+        // Setup ping handler
+        g_xdgWmBaseListener.ping = xdgWmBasePing;
+        i32 ret = xdg_wm_base_add_listener(g_xdgWmBase, &g_xdgWmBaseListener, nullptr);
+        PanicFmt(ret == 0, "xdg_wm_base_add_listener exited with {}", ret);
+    }
+    else if (core::sv(interface).eq("wl_compositor")) {
+        g_compositor = reinterpret_cast<wl_compositor*>(
+            wl_registry_bind(registry, name, &wl_compositor_interface, pickVersion(wl_compositor_interface))
+        );
+        Panic(g_compositor, "Failed to bind g_compositor");
+    }
+    else if (core::sv(interface).eq("wl_shm")) {
+        g_shm = reinterpret_cast<wl_shm*>(
+            wl_registry_bind(registry, name, &wl_shm_interface, pickVersion(wl_shm_interface))
+        );
+        Panic(g_shm, "Failed to bind g_shm");
+
+        g_shmListener.format = pickFormatCb;
+        i32 ret = wl_shm_add_listener(g_shm, &g_shmListener, nullptr);
+        PanicFmt(ret == 0, "wl_shm_add_listener exited with {}", ret);
+    }
+    else {
+        // Interfaces that are not used by the application:
+        logDebugTagged(LoggerTags::T_PLATFORM, "Register Global unhandled interfaces: {}", interface);
+        return;
+    }
+
+    logInfoTagged(LoggerTags::T_PLATFORM, "Bound interface: {}", interface);
+}
+
+void registerGlobalRemove(void*, wl_registry*, u32 name) {
+    logWarnTagged(LoggerTags::T_PLATFORM, "Register Global Remove called for objId: {}", name);
+    // TODO2: I might want to handle this just in case.
+}
+
+void releaseBuffer(void *data, struct wl_buffer *) {
+    logTraceTagged(LoggerTags::T_PLATFORM, "Buffer Released.");
+    bool* ready = static_cast<bool*>(data);
+    *ready = true;
+}
+
+void xdgSurfaceConfigure(void*, xdg_surface *xdgSurface, u32 serial) {
+    logInfoTagged(LoggerTags::T_PLATFORM, "Xdg Surface Configure Event serial: {}", serial);
+
+    xdg_surface_ack_configure(xdgSurface, serial);
+
+    if (g_useSoftwareRenderer) {
+        // TODO: This code needs to be a function and it needs to recreate the buffer
+        //       every time that the window is resized, so this is temporary code !
+        //       It also needs to use double/triple buffering.
+
+        i32 ret;
+
+        i32 size = g_windowStride * g_windowHeight;
+
+        i32 fd = memfd_create("tmp", 0);
+        defer { close(fd); };
+        PanicFmt(fd >= 0, "Failed to create an anonymous file to store the backing pixels buffer, err_code={}", errno);
+        ret = ftruncate(fd, addr_off(size));
+        PanicFmt(ret == 0, "Failed to truncate the anonymous file to size={}, err_code={}", size, errno);
+
+        // Map it in the virtual address space.
+        g_mappedData = reinterpret_cast<u8*>(
+            mmap(nullptr, addr_size(size), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)
+        );
+        PanicFmt(g_mappedData != MAP_FAILED, "Failed to memory map the anonymous file, err_code={}", errno);
+
+        // TODO: might want to avoid doing this in release builds:
+        core::memset(g_mappedData, u8(0x00), addr_size(size));
+
+        wl_shm_pool* pool = wl_shm_create_pool(g_shm, fd, i32(size));
+        Panic(pool, "wl_shm_create_pool failed to create pool.");
+        defer { wl_shm_pool_destroy(pool); };
+        g_buffer = wl_shm_pool_create_buffer(pool, 0,
+            g_windowWidth, g_windowHeight, g_windowStride,
+            WL_SHM_FORMAT_ARGB8888);
+        Panic(g_buffer, "wl_shm_pool_create_buffer failed to create buffer.");
+
+        // First time add the release buffer listener to the render state:
+        g_bufferListener.release = releaseBuffer;
+        g_bufferIsReady = true;
+        ret = wl_buffer_add_listener(g_buffer, &g_bufferListener, &g_bufferIsReady);
+        PanicFmt(ret == 0, "wl_buffer_add_listener exited with {}", ret);
+
+        // Hint to the compositor that the window will be non-transperant:
+        wl_region* emptyRegion = wl_compositor_create_region(g_compositor);
+        Panic(emptyRegion, "wl_compositor_create_region failed");
+        wl_region_add(emptyRegion, 0, 0, g_windowWidth, g_windowHeight);
+        wl_surface_set_opaque_region(g_surface, emptyRegion);
+        wl_region_destroy(emptyRegion);
+
+        wl_surface_attach(g_surface, g_buffer, 0, 0);
+        wl_surface_damage_buffer(g_surface, 0, 0, g_windowWidth, g_windowHeight);
+        wl_surface_commit(g_surface);
+        ret = wl_display_flush(g_display);
+        handleDisplayFlushError(ret, "buffer commit");
+    }
+}
+
+void pointerEnter(void*, wl_pointer*, u32, wl_surface*, wl_fixed_t, wl_fixed_t) {
+
+}
+
+void pointerLeave(void*, wl_pointer*, u32, wl_surface*) {
+
+}
+
+void pointerMotion(void*, wl_pointer*, u32, wl_fixed_t sx, wl_fixed_t sy) {
+    // I want to set these for pointer button events even when mouseMoveCallback is not set.
+    g_pointerX = wl_fixed_to_int(sx);
+    g_pointerY = wl_fixed_to_int(sy);
+
+    if (!g_userInputEventHandlers.mouseMoveCallback) return;
+
+    g_userInputEventHandlers.mouseMoveCallback(g_pointerX, g_pointerY);
+}
+
+void pointerButton(void*, wl_pointer* pointer, u32, u32, u32 button, u32 state) {
+    if (pointer != g_pointer) {
+        logWarnTagged(LoggerTags::T_PLATFORM, "the incoming pointer difers from the global exiting callback");
+        return;
+    }
+
+    if (!g_userInputEventHandlers.mouseClickCallback) return;
+
+    bool isPress = (state == WL_POINTER_BUTTON_STATE_PRESSED);
+
+    MouseButton mapped = MouseButton::NONE;
+    switch (button) {
+        case BTN_LEFT: mapped = MouseButton::LEFT; break;
+        case BTN_MIDDLE: mapped = MouseButton::MIDDLE; break;
+        case BTN_RIGHT: mapped = MouseButton::RIGHT; break;
+
+        default:
+            logWarnTagged(LoggerTags::T_PLATFORM, "unsupported mouse button type {}", button);
+            return;
+    }
+
+    // Position captured from latest motion event.
+    i32 x = g_pointerX;
+    i32 y = g_pointerY;
+    KeyboardModifiers mods = KeyboardModifiers::MODNONE; // TODO: add support for mods when keyboard events are handled.
+
+    g_userInputEventHandlers.mouseClickCallback(isPress, mapped, x, y, mods);
+}
+
+void pointerAxis(void*, wl_pointer*, u32, u32, wl_fixed_t) {
+
+}
+
+void pointerFrame(void*, wl_pointer*) {
+
+}
+
+void pointerAxisSource(void*, wl_pointer*, u32) {
+
+}
+
+void pointerAxisStop(void*, wl_pointer*, u32, u32) {
+
+}
+
+void pointerAxisDiscrete(void*, wl_pointer*, u32, i32) {
+
+}
+
+void pointerAxisValue120(void*, wl_pointer*, u32, i32) {
+
+}
+
+void pointerAxisRelativeDirection(void*, wl_pointer*, u32, u32) {
+
+}
+
+} // namespace

@@ -6,6 +6,7 @@ enum LoggerTags : u8 {
     T_ENTRY = 1,
     T_RENDERER = 2,
     T_PLATFORM = 3,
+    T_USER_INPUT = 4,
 };
 
 #define LOG_INFO_BLOCK_INIT_SECTION(tag, msg) \

@@ -67,6 +67,7 @@ set(src_sandbox
 set(src_gui
     src/core_init.cpp
     src/entry.cpp
+    src/user_input.cpp
     src/wayland_renderer.cpp
     src/wayland_platform.cpp
 
