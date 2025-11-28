@@ -11,7 +11,7 @@ using KeyCallback = void (*)(bool isPress, u32 vkcode, u32 scancode, KeyboardMod
 
 using MouseClickCallback = void (*)(bool isPress, MouseButton button, i32 x, i32 y, KeyboardModifiers mods);
 using MouseMoveCallback = void (*)(i32 x, i32 y);
-using MouseScrollCallback = void (*)(MouseScrollDirection direction, i32 x, i32 y);
+using MouseScrollCallback = void (*)(MouseScrollDirection direction, i32 x, i32 y, KeyboardModifiers mods);
 using MouseEnterOrLeaveCallback = void (*)(bool enter);
 
 struct UserInputEvents {
@@ -34,7 +34,7 @@ struct OpenWindowInfo {
     UserInputEvents userInputEvents;
 };
 
-// TODO: Handle "High density surfaces (HiDPI)"
+// TODO: Handle "High density surfaces (HiDPI)". Something like glfwGetWindowContentScale needs to be implemented.
 
 void platformInit();
 void platformShutdown();

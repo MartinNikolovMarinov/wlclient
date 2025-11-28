@@ -43,6 +43,16 @@ void entryInit(i32 argc, const char** argv) {
     Panic(core::loggerSetTag(LoggerTags::T_USER_INPUT, "ENTRY"_sv));
     core::loggerSetLevel(core::LogLevel::L_DEBUG, LoggerTags::T_USER_INPUT);
     info.userInputEvents = {
+        .windowCloseCallback = []() {
+            logDebugTagged(LoggerTags::T_USER_INPUT, "Close Event");
+            g_applicationStopped = true;
+            g_stopExitCode = ExitCodes::GRACEFUL_SHUTDOWN;
+        },
+        .windowResizeCallback = nullptr,
+        .windowFocusCallback = [](bool gain) {
+            logDebugTagged(LoggerTags::T_USER_INPUT, "Focus {}", gain ? "gained" : "lost");
+        },
+
         .keyCallback = [](bool isPress, u32 vkcode, u32 scancode, KeyboardModifiers mods) {
             logDebugTagged(LoggerTags::T_USER_INPUT,
                 "Keyboard Event: isPress={}, vkcode={}, scancode={}, modifiers={}",
@@ -53,17 +63,18 @@ void entryInit(i32 argc, const char** argv) {
                 g_stopExitCode = ExitCodes::GRACEFUL_SHUTDOWN;
             }
         },
+
         .mouseClickCallback = [](bool isPress, MouseButton button, i32 x, i32 y, KeyboardModifiers mods) {
-            logTraceTagged(LoggerTags::T_USER_INPUT, "Mouse Press Event: isPress={}, button={}, x={}, y={}, keyModifiers={}",
+            logDebugTagged(LoggerTags::T_USER_INPUT, "Mouse Press Event: isPress={}, button={}, x={}, y={}, keyModifiers={}",
                 isPress, mouseButtonToCstr(button), x, y, keyModifiersToCstr(mods));
         },
         .mouseMoveCallback = [](i32 x, i32 y) {
             logTraceTagged(LoggerTags::T_USER_INPUT, "Mouse Move Event: x={}, y={}", x, y);
         },
-        .mouseScrollCallback = [](MouseScrollDirection direction, i32 x, i32 y) {
+        .mouseScrollCallback = [](MouseScrollDirection direction, i32 x, i32 y, KeyboardModifiers mods) {
             logDebugTagged(LoggerTags::T_USER_INPUT,
-                "Mouse Scroll Event: direction={}, x={}, y={}",
-                mouseScrollDirection(direction), x, y);
+                "Mouse Scroll Event: direction={}, x={}, y={}, modifiers={}",
+                mouseScrollDirection(direction), x, y, keyModifiersToCstr(mods));
         },
         .mouseEnterOrLeaveCallback = [](bool enter) {
             logDebugTagged(LoggerTags::T_USER_INPUT, "Mouse Enter/Leave Event: {}", enter);
@@ -88,7 +99,7 @@ void setupScene() {
     u8 b = u8(core::fmod(tSeconds * 5.0, 255.0));
     u8 a = u8(255);
 
-    rendererClearScreen({.r = r, .g = g, .b = b, .a = a});
+    debug_renderClearFrameBuffer({.r = r, .g = g, .b = b, .a = a});
 
     i32 tmpWidth = 600;
     i32 tmpHeight = 600;
@@ -96,10 +107,10 @@ void setupScene() {
     i32 xx = i32(core::fmod(step, f64(tmpWidth)));
     i32 yy = i32(core::fmod(step, f64(tmpHeight)));
 
-    renderDirectRect({.r = 255, .g = 0, .b = 0, .a = 255}, xx, 0, 50, 50);
-    renderDirectRect({.r = 0, .g = 255, .b = 0, .a = 255}, (tmpWidth - 50) - xx, tmpHeight - 50, 50, 50);
-    renderDirectRect({.r = 0, .g = 0, .b = 255, .a = 255}, tmpWidth - 50, yy, 50, 50);
-    renderDirectRect({.r = 0, .g = 255, .b = 255, .a = 255}, 0, (tmpHeight - 50) - yy, 50, 50);
+    debug_renderFillRect({.r = 255, .g = 0, .b = 0, .a = 255}, xx, 0, 50, 50);
+    debug_renderFillRect({.r = 0, .g = 255, .b = 0, .a = 255}, (tmpWidth - 50) - xx, tmpHeight - 50, 50, 50);
+    debug_renderFillRect({.r = 0, .g = 0, .b = 255, .a = 255}, tmpWidth - 50, yy, 50, 50);
+    debug_renderFillRect({.r = 0, .g = 255, .b = 255, .a = 255}, 0, (tmpHeight - 50) - yy, 50, 50);
 }
 
 } // namespace

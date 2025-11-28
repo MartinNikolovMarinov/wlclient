@@ -88,14 +88,14 @@ void rendererShutdown() {
     g_sharedRenderCtx = {};
 }
 
-void rendererClearScreen(Color color) {
+void debug_renderClearFrameBuffer(Color color) {
     auto fb = getFrameBuffer();
     auto width = fb.width;
     auto height = fb.height;
-    renderDirectRect(color, 0, 0, width, height);
+    debug_renderFillRect(color, 0, 0, width, height);
 }
 
-void renderDirectRect(Color color, i32 x, i32 y, i32 width, i32 height) {
+void debug_renderFillRect(Color color, i32 x, i32 y, i32 width, i32 height) {
     auto fb = getFrameBuffer();
     u8 r = color.r;
     u8 g = color.g;
@@ -121,7 +121,7 @@ void renderDirectRect(Color color, i32 x, i32 y, i32 width, i32 height) {
 namespace {
 
 FrameBuffer& getFrameBuffer() {
-    // TODO: implement double/tripple buffering
+    // TODO: [Double-Buffer] implement double/tripple buffering
     return g_sharedRenderCtx.frameBuffers.first();
 }
 

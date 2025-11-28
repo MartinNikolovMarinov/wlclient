@@ -29,8 +29,9 @@ UserInputEvents g_userInputEventHandlers = {};
 wl_compositor *g_compositor = nullptr;
 wl_surface* g_surface = nullptr;
 xdg_surface* g_xdgSurface = nullptr;
-xdg_toplevel* g_xdgToplevel = nullptr;
 xdg_surface_listener g_xdgSurfaceListener = {};
+xdg_toplevel* g_xdgToplevel = nullptr;
+xdg_toplevel_listener g_xdgToplevelListener = {};
 
 i32 g_windowWidth = 0;
 i32 g_windowHeight = 0;
@@ -93,6 +94,10 @@ void releaseBuffer(void *data, struct wl_buffer *);
 void xdgWmBasePing(void*, xdg_wm_base *xdgWmBase, u32 serial);
 
 void xdgSurfaceConfigure(void*, xdg_surface *xdgSurface, u32 serial);
+void xdgToplevelClose(void*, xdg_toplevel *toplevel);
+void xdgToplevelConfigure(void*, xdg_toplevel *toplevel, i32 width, i32 height, wl_array* states);
+void xdgToplevelConfigureBounds(void*, xdg_toplevel *toplevel, i32 width, i32 height);
+void xdgToplevelConfigureWMCapabilities(void*, xdg_toplevel *toplevel, wl_array* caps);
 
 void pointerEnter(void* data, wl_pointer* pointer, u32 serial, wl_surface* surface, wl_fixed_t sx, wl_fixed_t sy);
 void pointerLeave(void* data, wl_pointer* pointer, u32 serial, wl_surface* surface);
@@ -257,6 +262,13 @@ void platformOpenOSWindow(const OpenWindowInfo& openInfo) {
     g_xdgSurfaceListener.configure = xdgSurfaceConfigure;
     ret = xdg_surface_add_listener(g_xdgSurface, &g_xdgSurfaceListener, nullptr);
     PanicFmt(ret == 0, "xdg_surface_add_listener exited with {}", ret);
+
+    g_xdgToplevelListener.close = xdgToplevelClose;
+    g_xdgToplevelListener.configure = xdgToplevelConfigure;
+    g_xdgToplevelListener.configure_bounds = xdgToplevelConfigureBounds;
+    g_xdgToplevelListener.wm_capabilities = xdgToplevelConfigureWMCapabilities;
+    ret = xdg_toplevel_add_listener(g_xdgToplevel, &g_xdgToplevelListener, nullptr);
+    PanicFmt(ret == 0, "xdg_toplevel_add_listener exited with {}", ret);
 
     wl_surface_commit(g_surface);
     ret = wl_display_roundtrip(g_display);
@@ -465,12 +477,12 @@ void releaseBuffer(void *data, struct wl_buffer *) {
 }
 
 void xdgSurfaceConfigure(void*, xdg_surface *xdgSurface, u32 serial) {
-    logInfoTagged(LoggerTags::T_PLATFORM, "Xdg Surface Configure Event serial: {}", serial);
+    logTraceTagged(LoggerTags::T_PLATFORM, "Xdg Surface Configure Event serial: {}", serial);
 
     xdg_surface_ack_configure(xdgSurface, serial);
 
     if (g_useSoftwareRenderer) {
-        // TODO: This code needs to be a function and it needs to recreate the buffer
+        // TODO: [Double-Buffer] This code needs to be a function and it needs to recreate the buffer
         //       every time that the window is resized, so this is temporary code !
         //       It also needs to use double/triple buffering.
 
@@ -490,7 +502,7 @@ void xdgSurfaceConfigure(void*, xdg_surface *xdgSurface, u32 serial) {
         );
         PanicFmt(g_mappedData != MAP_FAILED, "Failed to memory map the anonymous file, err_code={}", errno);
 
-        // TODO: might want to avoid doing this in release builds:
+        // TODO2: [PERFORMANCE] might want to avoid doing this in release builds:
         core::memset(g_mappedData, u8(0x00), addr_size(size));
 
         wl_shm_pool* pool = wl_shm_create_pool(g_shm, fd, i32(size));
@@ -519,6 +531,40 @@ void xdgSurfaceConfigure(void*, xdg_surface *xdgSurface, u32 serial) {
         wl_surface_commit(g_surface);
         ret = wl_display_flush(g_display);
         handleDisplayFlushError(ret, "buffer commit");
+    }
+}
+
+void xdgToplevelConfigure(void*, [[maybe_unused]] xdg_toplevel *toplevel, i32 width, i32 height, wl_array* states) {
+    Assert(toplevel == g_xdgToplevel, "Unexpected toplevel on configure");
+    logDebugTagged(LoggerTags::T_PLATFORM, "Toplevel configure: size {}x{}", width, height);
+
+    (void)states;
+
+    // TODO: [WINDOW_RESIZE] This is where window resize event should be handled.
+}
+
+void xdgToplevelConfigureBounds(void*, [[maybe_unused]] xdg_toplevel *toplevel, i32 width, i32 height) {
+    Assert(toplevel == g_xdgToplevel, "Unexpected toplevel on configure_bounds");
+    logDebugTagged(LoggerTags::T_PLATFORM, "Toplevel bounds: {}x{}", width, height);
+
+    // TODO: [WINDOW_RESIZE] Suggested maximum content bounds from the compositor; safe to ignore unless we want to
+    // clamp resize/buffer size.
+}
+
+void xdgToplevelConfigureWMCapabilities(void*, [[maybe_unused]] xdg_toplevel *toplevel, wl_array* caps) {
+    Assert(toplevel == g_xdgToplevel, "Unexpected toplevel on wm_capabilities");
+
+    (void)caps;
+
+    // TODO: [WINDOW_MINIMIZE_MAXIMIZE] Capabilities are hints about WM-supported features (e.g., minimize/maximize); we
+    // currently ignore them.
+}
+
+void xdgToplevelClose(void*, [[maybe_unused]] xdg_toplevel *toplevel) {
+    Assert(toplevel == g_xdgToplevel, "Unexpected toplevel on close");
+
+    if (g_userInputEventHandlers.windowCloseCallback) {
+        g_userInputEventHandlers.windowCloseCallback();
     }
 }
 
@@ -573,8 +619,7 @@ void pointerButton(void*, [[maybe_unused]] wl_pointer* pointer, u32, u32, u32 bu
     // Position captured from latest motion event.
     i32 x = g_pointerX;
     i32 y = g_pointerY;
-    KeyboardModifiers mods = KeyboardModifiers::MODNONE; // TODO: add support for mods when keyboard events are handled.
-
+    KeyboardModifiers mods = g_keyboardModifiers;
     g_userInputEventHandlers.mouseClickCallback(isPress, mapped, x, y, mods);
 }
 
@@ -671,28 +716,8 @@ void pointerFrame(void*, [[maybe_unused]] wl_pointer* pointer) {
 
     MouseScrollDirection dir;
     if (flushAxisState(WL_POINTER_AXIS_VERTICAL_SCROLL, dir)) {
-        g_userInputEventHandlers.mouseScrollCallback(dir, g_pointerX, g_pointerY);
+        g_userInputEventHandlers.mouseScrollCallback(dir, g_pointerX, g_pointerY, g_keyboardModifiers);
     }
-}
-
-void keyboardKeymap(void*, [[maybe_unused]] wl_keyboard* keyboard, u32 format, i32 fd, u32 size) {
-    Assert(keyboard == g_keyboard, "Unexpected keyboard on keymap");
-    logDebugTagged(LoggerTags::T_PLATFORM, "keymap format={}, fd={}, size={}", format, fd, size);
-
-    // We do not consume the keymap; close the fd to avoid leaking it.
-    if (fd >= 0) close(fd);
-}
-
-void keyboardEnter(void*, [[maybe_unused]] wl_keyboard* keyboard, u32 serial, wl_surface*, wl_array* keys) {
-    Assert(keyboard == g_keyboard, "Unexpected keyboard on enter");
-    size_t keyBytes = keys ? keys->size : 0;
-    logDebugTagged(LoggerTags::T_PLATFORM, "keyboard enter serial={}, key_bytes={}", serial, keyBytes);
-}
-
-void keyboardLeave(void*, [[maybe_unused]] wl_keyboard* keyboard, u32 serial, wl_surface*) {
-    Assert(keyboard == g_keyboard, "Unexpected keyboard on leave");
-    logDebugTagged(LoggerTags::T_PLATFORM, "keyboard leave serial={}", serial);
-    g_keyboardModifiers = KeyboardModifiers::MODNONE;
 }
 
 inline void updateModifiersFromKey(u32 key, bool isPress) {
@@ -727,9 +752,55 @@ inline void updateModifiersFromKey(u32 key, bool isPress) {
     }
 }
 
-void keyboardKey(void*, [[maybe_unused]] wl_keyboard* keyboard, u32 serial, u32 time, u32 key, u32 state) {
+void keyboardKeymap(void*, [[maybe_unused]] wl_keyboard* keyboard, u32 format, i32 fd, u32 size) {
+    Assert(keyboard == g_keyboard, "Unexpected keyboard on keymap");
+    // We do not consume the keymap; close the fd to avoid leaking it.
+    if (fd >= 0) close(fd);
+
+    (void)format;
+    (void)size;
+}
+
+void keyboardEnter(void*, [[maybe_unused]] wl_keyboard* keyboard, u32, wl_surface*, wl_array* keys) {
+    Assert(keyboard == g_keyboard, "Unexpected keyboard on enter");
+    Assert(g_keyboardModifiers == KeyboardModifiers::MODNONE,
+        "BUG: g_keyboardModifiers is not MODNONE on keyboardEnter, which means it was not cleared on keyboard leave.");
+
+    // First gain focus
+    if (g_userInputEventHandlers.windowFocusCallback) {
+        g_userInputEventHandlers.windowFocusCallback(true);
+    }
+
+    u32* keyData = keys ? static_cast<u32*>(keys->data) : nullptr;
+    size_t keyCount = keys ? keys->size / sizeof(u32) : 0;
+
+    // Then replay the currently pressed keys
+    if (g_userInputEventHandlers.keyCallback) {
+        // First rebuild modifier state from the currently pressed keys.
+        for (size_t i = 0; i < keyCount; ++i) {
+            updateModifiersFromKey(keyData[i], true);
+        }
+
+        // Then dispatch press callbacks so the user can sync his state.
+        for (size_t i = 0; i < keyCount; ++i) {
+            u32 vkcode = keyData[i];
+            u32 scancode = keyData[i];
+            g_userInputEventHandlers.keyCallback(true, vkcode, scancode, g_keyboardModifiers);
+        }
+    }
+}
+
+void keyboardLeave(void*, [[maybe_unused]] wl_keyboard* keyboard, u32, wl_surface*) {
+    Assert(keyboard == g_keyboard, "Unexpected keyboard on leave");
+    g_keyboardModifiers = KeyboardModifiers::MODNONE;
+
+    if (g_userInputEventHandlers.windowFocusCallback) {
+        g_userInputEventHandlers.windowFocusCallback(false);
+    }
+}
+
+void keyboardKey(void*, [[maybe_unused]] wl_keyboard* keyboard, u32, u32 /*time*/, u32 key, u32 state) {
     Assert(keyboard == g_keyboard, "Unexpected keyboard on key");
-    logDebugTagged(LoggerTags::T_PLATFORM, "key serial={}, time={}, key={}, state={}", serial, time, key, state);
 
     bool isPress = (state == WL_KEYBOARD_KEY_STATE_PRESSED);
     updateModifiersFromKey(key, isPress);

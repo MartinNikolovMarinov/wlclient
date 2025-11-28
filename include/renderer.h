@@ -13,5 +13,5 @@ struct Color {
     u8 a;
 };
 
-void rendererClearScreen(Color color);
-void renderDirectRect(Color color, i32 x, i32 y, i32 width, i32 height);
+void debug_renderClearFrameBuffer(Color color);
+void debug_renderFillRect(Color color, i32 x, i32 y, i32 width, i32 height);
