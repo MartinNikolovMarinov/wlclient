@@ -40,11 +40,19 @@ void entryInit(i32 argc, const char** argv) {
     core::loggerSetLevel(core::LogLevel::L_DEBUG, LoggerTags::T_USER_INPUT);
     info.userInputEvents = {
         .mouseClickCallback = [](bool isPress, MouseButton button, i32 x, i32 y, KeyboardModifiers mods) {
-            logDebugTagged(LoggerTags::T_USER_INPUT, "isPress={}, button={}, x={}, y={}, keyModifiers={}",
+            logTraceTagged(LoggerTags::T_USER_INPUT, "Mouse Press Event: isPress={}, button={}, x={}, y={}, keyModifiers={}",
                 isPress, mouseButtonToCstr(button), x, y, keyModifiersToCstr(mods));
         },
         .mouseMoveCallback = [](i32 x, i32 y) {
-            logDebugTagged(LoggerTags::T_USER_INPUT, "x={}, y={}", x, y);
+            logTraceTagged(LoggerTags::T_USER_INPUT, "Mouse Move Event: x={}, y={}", x, y);
+        },
+        .mouseScrollCallback = [](MouseScrollDirection direction, i32 x, i32 y) {
+            logDebugTagged(LoggerTags::T_USER_INPUT,
+                "Mouse Scroll Event: direction={}, x={}, y={}",
+                mouseScrollDirection(direction), x, y);
+        },
+        .mouseEnterOrLeaveCallback = [](bool enter) {
+            logDebugTagged(LoggerTags::T_USER_INPUT, "Mouse Enter/Leave Event: {}", enter);
         },
     };
 

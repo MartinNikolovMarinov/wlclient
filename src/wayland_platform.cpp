@@ -21,20 +21,6 @@ wl_display *g_display = nullptr;
 wl_registry *g_registry = nullptr;
 wl_registry_listener g_registerListener = {};
 
-wl_seat *g_seat = nullptr;
-wl_seat_listener g_seatListener = {};
-const char* g_seatName = nullptr;
-
-wl_pointer *g_pointer = nullptr;
-wl_pointer_listener g_pointerListener = {};
-
-// Latest pointer position in surface-local coordinates (integer pixels).
-i32 g_pointerX = 0;
-i32 g_pointerY = 0;
-
-wl_keyboard *g_keyboard = nullptr;
-wl_keyboard_listener g_keyboardListener = {};
-
 xdg_wm_base* g_xdgWmBase = nullptr;
 xdg_wm_base_listener g_xdgWmBaseListener = {};
 
@@ -46,6 +32,12 @@ xdg_surface* g_xdgSurface = nullptr;
 xdg_toplevel* g_xdgToplevel = nullptr;
 xdg_surface_listener g_xdgSurfaceListener = {};
 
+i32 g_windowWidth = 0;
+i32 g_windowHeight = 0;
+i32 g_windowStride = 0;
+
+// ############################################ BEGIN Software Rendering State #########################################
+
 [[maybe_unused]] wl_shm* g_shm = nullptr;
 [[maybe_unused]] wl_shm_listener g_shmListener = {};
 [[maybe_unused]] wl_buffer* g_buffer = nullptr;
@@ -54,9 +46,38 @@ xdg_surface_listener g_xdgSurfaceListener = {};
 [[maybe_unused]] bool g_bufferIsReady = false;
 [[maybe_unused]] PixelFormat g_pixelFormat = PixelFormat::UNDEFINED;
 
-i32 g_windowWidth = 0;
-i32 g_windowHeight = 0;
-i32 g_windowStride = 0;
+// ############################################ END Software Rendering State ###########################################
+
+wl_seat *g_seat = nullptr;
+wl_seat_listener g_seatListener = {};
+const char* g_seatName = nullptr;
+
+// ############################################ BEGIN Pointer State ####################################################
+
+wl_pointer *g_pointer = nullptr;
+wl_pointer_listener g_pointerListener = {};
+
+// Latest pointer position in surface-local coordinates (integer pixels).
+i32 g_pointerX = 0;
+i32 g_pointerY = 0;
+
+// Pending scroll data collected until the matching pointerFrame flushes it.
+struct WaylandScrollState {
+    bool hasAxis = false;
+    wl_fixed_t value = 0; // Continuous delta.
+    i32 value120 = 0; // High-res discrete delta (multiples of 120).
+    bool hasValue120 = false;
+};
+WaylandScrollState g_scrollState[2]; // Up and down. TODO2: Horizontal scrolling can be added here.
+bool g_scrollFrameHasData = false;
+
+// ############################################ EBD Pointer State ######################################################
+// ############################################ BEGIN Keyboard State ###################################################
+
+wl_keyboard *g_keyboard = nullptr;
+wl_keyboard_listener g_keyboardListener = {};
+
+// ############################################ END Keyboard State #####################################################
 
 inline void handleDisplayFlushError(i32 errCode, const char* context);
 
@@ -490,15 +511,27 @@ void xdgSurfaceConfigure(void*, xdg_surface *xdgSurface, u32 serial) {
     }
 }
 
-void pointerEnter(void*, wl_pointer*, u32, wl_surface*, wl_fixed_t, wl_fixed_t) {
+void pointerEnter(void*, [[maybe_unused]] wl_pointer* pointer, u32, wl_surface*, wl_fixed_t, wl_fixed_t) {
+    // Pointer focus entered our surface; Wayland expects clients to set/update the cursor image here.
+    Assert(pointer == g_pointer, "Unexpected pointer object on enter");
 
+    if (!g_userInputEventHandlers.mouseEnterOrLeaveCallback) return;
+
+    g_userInputEventHandlers.mouseEnterOrLeaveCallback(true);
 }
 
-void pointerLeave(void*, wl_pointer*, u32, wl_surface*) {
+void pointerLeave(void*, [[maybe_unused]] wl_pointer* pointer, u32, wl_surface*) {
+    // Pointer focus left our surface; Wayland expects clients to drop the cursor image here.
+    Assert(pointer == g_pointer, "Unexpected pointer object on leave");
 
+    if (!g_userInputEventHandlers.mouseEnterOrLeaveCallback) return;
+
+    g_userInputEventHandlers.mouseEnterOrLeaveCallback(false);
 }
 
-void pointerMotion(void*, wl_pointer*, u32, wl_fixed_t sx, wl_fixed_t sy) {
+void pointerMotion(void*, [[maybe_unused]] wl_pointer* pointer, u32, wl_fixed_t sx, wl_fixed_t sy) {
+    Assert(pointer == g_pointer, "Unexpected pointer object on motion");
+
     // I want to set these for pointer button events even when mouseMoveCallback is not set.
     g_pointerX = wl_fixed_to_int(sx);
     g_pointerY = wl_fixed_to_int(sy);
@@ -508,11 +541,8 @@ void pointerMotion(void*, wl_pointer*, u32, wl_fixed_t sx, wl_fixed_t sy) {
     g_userInputEventHandlers.mouseMoveCallback(g_pointerX, g_pointerY);
 }
 
-void pointerButton(void*, wl_pointer* pointer, u32, u32, u32 button, u32 state) {
-    if (pointer != g_pointer) {
-        logWarnTagged(LoggerTags::T_PLATFORM, "the incoming pointer difers from the global exiting callback");
-        return;
-    }
+void pointerButton(void*, [[maybe_unused]] wl_pointer* pointer, u32, u32, u32 button, u32 state) {
+    Assert(pointer == g_pointer, "Unexpected pointer object on button");
 
     if (!g_userInputEventHandlers.mouseClickCallback) return;
 
@@ -537,32 +567,101 @@ void pointerButton(void*, wl_pointer* pointer, u32, u32, u32 button, u32 state) 
     g_userInputEventHandlers.mouseClickCallback(isPress, mapped, x, y, mods);
 }
 
-void pointerAxis(void*, wl_pointer*, u32, u32, wl_fixed_t) {
+void pointerAxis(void*, [[maybe_unused]] wl_pointer* pointer, u32 /*time*/, u32 axis, wl_fixed_t value) {
+    // Continuous scroll/axis delta for vertical or horizontal scrolling; delivered once per axis before frame().
 
+    Assert(pointer == g_pointer, "Unexpected pointer object on axis");
+
+    if (!g_userInputEventHandlers.mouseScrollCallback) return;
+    if (axis >= 2) return;
+
+    g_scrollFrameHasData = true;
+    g_scrollState[axis].hasAxis = true;
+    g_scrollState[axis].value += value;
 }
 
-void pointerFrame(void*, wl_pointer*) {
+void pointerAxisDiscrete(void*, [[maybe_unused]] wl_pointer* pointer, u32 axis, i32 discrete) {
+    // Deprecated discrete scroll steps; integer wheel notches paired with the axis() event in the same frame.
 
+    Assert(pointer == g_pointer, "Unexpected pointer object on axisDiscrete");
+
+    if (!g_userInputEventHandlers.mouseScrollCallback) return;
+    if (axis >= 2) return;
+
+    g_scrollFrameHasData = true;
+    g_scrollState[axis].hasAxis = true;
+    g_scrollState[axis].value += wl_fixed_from_int(discrete);
+}
+
+void pointerAxisValue120(void*, [[maybe_unused]] wl_pointer* pointer, u32 axis, i32 value120) {
+    // High-resolution discrete scrolling: multiples of 120 represent a full wheel detent (since wl_pointer v8).
+
+    Assert(pointer == g_pointer, "Unexpected pointer object on AxisValue120");
+
+    if (!g_userInputEventHandlers.mouseScrollCallback) return;
+    if (axis >= 2) return;
+
+    g_scrollFrameHasData = true;
+    g_scrollState[axis].hasAxis = true;
+    g_scrollState[axis].value120 += value120;
+    g_scrollState[axis].hasValue120 = true;
 }
 
 void pointerAxisSource(void*, wl_pointer*, u32) {
-
+    // Describes what produced the axis events in this frame (e.g. wheel, finger, continuous touchpad scroll).
 }
 
 void pointerAxisStop(void*, wl_pointer*, u32, u32) {
-
+    // Signals the end of a scrolling sequence for a given axis (mainly sent for touchpad finger scrolling).
 }
 
-void pointerAxisDiscrete(void*, wl_pointer*, u32, i32) {
-
+void pointerAxisRelativeDirection(void*, wl_pointer*, u32 /*axis*/, u32 /*direction*/) {
+    // Indicates whether the physical scroll direction matches or is inverted relative to the axis value (natural scroll).
 }
 
-void pointerAxisValue120(void*, wl_pointer*, u32, i32) {
+void pointerFrame(void*, [[maybe_unused]] wl_pointer* pointer) {
+    // Marks the end of a batch of pointer events (motion/button/axis); accumulate data until this fires.
+    Assert(pointer == g_pointer, "Unexpected pointer object on frame");
 
-}
+    if (!g_scrollFrameHasData || !g_userInputEventHandlers.mouseScrollCallback) return;
 
-void pointerAxisRelativeDirection(void*, wl_pointer*, u32, u32) {
+    defer {
+        // Clear frame state.
+        g_scrollFrameHasData = false;
+        core::memset(g_scrollState, {}, CORE_C_ARRLEN(g_scrollState));
+    };
 
+    auto flushAxisState = [](u32 axis, MouseScrollDirection& dir) -> bool {
+        const auto& scrollState = g_scrollState[axis];
+
+        if (!scrollState.hasAxis) return false;
+        if (axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL) {
+            // TODO2: Horizontal scroll isn't supported.
+            return false;
+        }
+
+        if (scrollState.hasValue120) {
+            // TODO2: This ignores scroll magnitude/velocity, so on some devices (hi‑res wheels/touchpads) user experience
+            //        might be unsatisfactory.
+            f64 real = wl_fixed_to_double(scrollState.value120);
+            if (real > 0) dir = MouseScrollDirection::DOWN;
+            else if (real < 0) dir = MouseScrollDirection::UP;
+            else dir = MouseScrollDirection::NONE;
+        }
+        else {
+            i32 discrete = wl_fixed_to_int(scrollState.value);
+            if (discrete > 0) dir = MouseScrollDirection::DOWN;
+            else if (discrete < 0) dir = MouseScrollDirection::UP;
+            else dir = MouseScrollDirection::NONE;
+        }
+
+        return true;
+    };
+
+    MouseScrollDirection dir;
+    if (flushAxisState(WL_POINTER_AXIS_VERTICAL_SCROLL, dir)) {
+        g_userInputEventHandlers.mouseScrollCallback(dir, g_pointerX, g_pointerY);
+    }
 }
 
 } // namespace
