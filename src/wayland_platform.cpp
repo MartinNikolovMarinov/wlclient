@@ -76,6 +76,7 @@ bool g_scrollFrameHasData = false;
 
 wl_keyboard *g_keyboard = nullptr;
 wl_keyboard_listener g_keyboardListener = {};
+KeyboardModifiers g_keyboardModifiers = KeyboardModifiers::MODNONE;
 
 // ############################################ END Keyboard State #####################################################
 
@@ -104,6 +105,13 @@ void pointerAxisStop(void* data, wl_pointer* pointer, u32 time, u32 axis);
 void pointerAxisDiscrete(void* data, wl_pointer* pointer, u32 axis, i32 discrete);
 void pointerAxisValue120(void* data, wl_pointer* pointer, u32 axis, i32 value120);
 void pointerAxisRelativeDirection(void* data, wl_pointer* pointer, u32 axis, u32 direction);
+
+void keyboardKeymap(void* data, wl_keyboard* keyboard, u32 format, i32 fd, u32 size);
+void keyboardEnter(void* data, wl_keyboard* keyboard, u32 serial, wl_surface* surface, wl_array* keys);
+void keyboardLeave(void* data, wl_keyboard* keyboard, u32 serial, wl_surface* surface);
+void keyboardKey(void* data, wl_keyboard* keyboard, u32 serial, u32 time, u32 key, u32 state);
+void keyboardModifiers(void* data, wl_keyboard* keyboard, u32 serial, u32 mods_depressed, u32 mods_latched, u32 mods_locked, u32 group);
+void keyboardRepeatInfo(void* data, wl_keyboard* keyboard, i32 rate, i32 delay);
 
 } // namespace
 
@@ -361,10 +369,13 @@ void seatCapabilities(void*, wl_seat *seat, u32 capabilities) {
             g_keyboard = wl_seat_get_keyboard(g_seat);
             Panic(g_keyboard, "failed to get pointer from seat.");
 
-            // keyboard callbacks
-
-            // g_keyboardListener.
-            // wl_keyboard_add_listener(g_keyboard, &g_keyboardListener, nullptr);
+            g_keyboardListener.keymap = keyboardKeymap;
+            g_keyboardListener.enter = keyboardEnter;
+            g_keyboardListener.leave = keyboardLeave;
+            g_keyboardListener.key = keyboardKey;
+            g_keyboardListener.modifiers = keyboardModifiers;
+            g_keyboardListener.repeat_info = keyboardRepeatInfo;
+            wl_keyboard_add_listener(g_keyboard, &g_keyboardListener, nullptr);
 
             logInfo("Registered keyboard successfully");
         }
@@ -662,6 +673,82 @@ void pointerFrame(void*, [[maybe_unused]] wl_pointer* pointer) {
     if (flushAxisState(WL_POINTER_AXIS_VERTICAL_SCROLL, dir)) {
         g_userInputEventHandlers.mouseScrollCallback(dir, g_pointerX, g_pointerY);
     }
+}
+
+void keyboardKeymap(void*, [[maybe_unused]] wl_keyboard* keyboard, u32 format, i32 fd, u32 size) {
+    Assert(keyboard == g_keyboard, "Unexpected keyboard on keymap");
+    logDebugTagged(LoggerTags::T_PLATFORM, "keymap format={}, fd={}, size={}", format, fd, size);
+
+    // We do not consume the keymap; close the fd to avoid leaking it.
+    if (fd >= 0) close(fd);
+}
+
+void keyboardEnter(void*, [[maybe_unused]] wl_keyboard* keyboard, u32 serial, wl_surface*, wl_array* keys) {
+    Assert(keyboard == g_keyboard, "Unexpected keyboard on enter");
+    size_t keyBytes = keys ? keys->size : 0;
+    logDebugTagged(LoggerTags::T_PLATFORM, "keyboard enter serial={}, key_bytes={}", serial, keyBytes);
+}
+
+void keyboardLeave(void*, [[maybe_unused]] wl_keyboard* keyboard, u32 serial, wl_surface*) {
+    Assert(keyboard == g_keyboard, "Unexpected keyboard on leave");
+    logDebugTagged(LoggerTags::T_PLATFORM, "keyboard leave serial={}", serial);
+    g_keyboardModifiers = KeyboardModifiers::MODNONE;
+}
+
+inline void updateModifiersFromKey(u32 key, bool isPress) {
+    auto setBit = [isPress](KeyboardModifiers bit) {
+        if (isPress) {
+            g_keyboardModifiers = g_keyboardModifiers | bit;
+        }
+        else {
+            g_keyboardModifiers = g_keyboardModifiers & (~bit);
+        }
+    };
+
+    switch (key) {
+        case KEY_LEFTSHIFT:
+        case KEY_RIGHTSHIFT:
+            setBit(KeyboardModifiers::MODSHIFT);
+            break;
+        case KEY_LEFTCTRL:
+        case KEY_RIGHTCTRL:
+            setBit(KeyboardModifiers::MODCONTROL);
+            break;
+        case KEY_LEFTALT:
+        case KEY_RIGHTALT:
+            setBit(KeyboardModifiers::MODALT);
+            break;
+        case KEY_LEFTMETA:
+        case KEY_RIGHTMETA:
+            setBit(KeyboardModifiers::MODSUPER);
+            break;
+        default:
+            break;
+    }
+}
+
+void keyboardKey(void*, [[maybe_unused]] wl_keyboard* keyboard, u32 serial, u32 time, u32 key, u32 state) {
+    Assert(keyboard == g_keyboard, "Unexpected keyboard on key");
+    logDebugTagged(LoggerTags::T_PLATFORM, "key serial={}, time={}, key={}, state={}", serial, time, key, state);
+
+    bool isPress = (state == WL_KEYBOARD_KEY_STATE_PRESSED);
+    updateModifiersFromKey(key, isPress);
+
+    if (!g_userInputEventHandlers.keyCallback) return;
+
+    u32 vkcode = key;
+    u32 scancode = key;
+    g_userInputEventHandlers.keyCallback(isPress, vkcode, scancode, g_keyboardModifiers);
+}
+
+void keyboardModifiers(void*, [[maybe_unused]] wl_keyboard* keyboard, u32 serial, u32 mods_depressed, u32 mods_latched, u32 mods_locked, u32 group) {
+    Assert(keyboard == g_keyboard, "Unexpected keyboard on modifiers");
+    logDebugTagged(LoggerTags::T_PLATFORM, "modifiers serial={}, dep={}, lat={}, lock={}, group={}", serial, mods_depressed, mods_latched, mods_locked, group);
+}
+
+void keyboardRepeatInfo(void*, [[maybe_unused]] wl_keyboard* keyboard, i32 rate, i32 delay) {
+    Assert(keyboard == g_keyboard, "Unexpected keyboard on repeat info");
+    logDebugTagged(LoggerTags::T_PLATFORM, "repeat rate={}, delay={}ms", rate, delay);
 }
 
 } // namespace

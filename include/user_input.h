@@ -12,6 +12,8 @@ enum struct KeyboardModifiers : u8 {
     MODSUPER = 1 << 3,
 };
 
+inline constexpr bool operator!(KeyboardModifiers m) { return ~u8(m); }
+
 inline constexpr KeyboardModifiers operator|(KeyboardModifiers lhs, KeyboardModifiers rhs) {
     return KeyboardModifiers(u8(lhs) | u8(rhs));
 }
@@ -22,6 +24,30 @@ inline constexpr KeyboardModifiers operator&(KeyboardModifiers lhs, KeyboardModi
 
 inline constexpr KeyboardModifiers operator^(KeyboardModifiers lhs, KeyboardModifiers rhs) {
     return KeyboardModifiers(u8(lhs) ^ u8(rhs));
+}
+
+inline constexpr bool operator==(KeyboardModifiers lhs, KeyboardModifiers rhs) {
+    return u8(lhs) == u8(rhs);
+}
+inline constexpr bool operator!=(KeyboardModifiers lhs, KeyboardModifiers rhs) {
+    return !(lhs == rhs);
+}
+
+inline constexpr bool operator==(KeyboardModifiers lhs, u8 rhs) {
+    return u8(lhs) == rhs;
+}
+inline constexpr bool operator!=(KeyboardModifiers lhs, u8 rhs) {
+    return !(lhs == rhs);
+}
+inline constexpr bool operator==(u8 lhs, KeyboardModifiers rhs) {
+    return lhs == u8(rhs);
+}
+inline constexpr bool operator!=(u8 lhs, KeyboardModifiers rhs) {
+    return !(lhs == rhs);
+}
+
+inline constexpr KeyboardModifiers operator~(KeyboardModifiers& lhs) {
+    return KeyboardModifiers(~u8(lhs));
 }
 
 // Define compound assignment operators

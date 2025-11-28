@@ -5,6 +5,8 @@
 #include "platform.h"
 #include "renderer.h"
 
+#include <linux/input-event-codes.h> // FIXME: Move these event codes to a user defined constants in user_input.h
+
 extern "C" {
 
 enum struct ExitCodes : i32 {
@@ -17,6 +19,8 @@ static constexpr f64 FRAME_RATE_CAP = 60.0;
 
 [[maybe_unused]] static bool g_reloading = false;
 static const u64 g_cpuFreq = core::getCPUFrequencyHz();
+static bool g_applicationStopped = false;
+static ExitCodes g_stopExitCode = ExitCodes::GRACEFUL_SHUTDOWN;
 
 void entryInit(i32 argc, const char** argv) {
     (void)argc;
@@ -39,6 +43,16 @@ void entryInit(i32 argc, const char** argv) {
     Panic(core::loggerSetTag(LoggerTags::T_USER_INPUT, "ENTRY"_sv));
     core::loggerSetLevel(core::LogLevel::L_DEBUG, LoggerTags::T_USER_INPUT);
     info.userInputEvents = {
+        .keyCallback = [](bool isPress, u32 vkcode, u32 scancode, KeyboardModifiers mods) {
+            logDebugTagged(LoggerTags::T_USER_INPUT,
+                "Keyboard Event: isPress={}, vkcode={}, scancode={}, modifiers={}",
+                isPress, vkcode, scancode, keyModifiersToCstr(mods));
+
+            if (scancode == KEY_ESC) {
+                g_applicationStopped = true;
+                g_stopExitCode = ExitCodes::GRACEFUL_SHUTDOWN;
+            }
+        },
         .mouseClickCallback = [](bool isPress, MouseButton button, i32 x, i32 y, KeyboardModifiers mods) {
             logTraceTagged(LoggerTags::T_USER_INPUT, "Mouse Press Event: isPress={}, button={}, x={}, y={}, keyModifiers={}",
                 isPress, mouseButtonToCstr(button), x, y, keyModifiersToCstr(mods));
@@ -100,6 +114,11 @@ i32 entryMain() {
     }
 
     platformPollEvents();
+
+    if (g_applicationStopped) {
+        return i32(g_stopExitCode);
+    }
+
     setupScene();
     g_lastFrameRendered = renderFrame();
 
