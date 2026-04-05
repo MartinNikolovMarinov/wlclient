@@ -81,8 +81,11 @@ log_info("---------------------------------------------")
 # ---------------------------------------- Begin Declare Source Files --------------------------------------------------
 
 set(src_wlclient
+
     src/debug.c
     src/wl-client.c
+
+    lib/wayland/xdg-shell-client-protocol.c
 )
 
 set(src_sandbox

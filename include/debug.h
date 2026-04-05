@@ -2,7 +2,6 @@
 
 #include "API.h"
 #include "compiler.h"
-#include "macro_magic.h"
 #include "types.h"
 
 typedef enum wlclient_log_level {
@@ -35,15 +34,3 @@ WLCLIENT_API_EXPORT void wlclient_log_message(
 #define WLCLIENT_LOG_WARN(format, ...)  wlclient_log_message(WLCLIENT_LOG_LEVEL_WARN,  __FILE__, __LINE__, format, ##__VA_ARGS__)
 #define WLCLIENT_LOG_ERR(format, ...)   wlclient_log_message(WLCLIENT_LOG_LEVEL_ERROR, __FILE__, __LINE__, format, ##__VA_ARGS__)
 #define WLCLIENT_LOG_FATAL(format, ...) wlclient_log_message(WLCLIENT_LOG_LEVEL_FATAL, __FILE__, __LINE__, format, ##__VA_ARGS__)
-
-#define WLCLIENT_RETURN_ERRNO_IF(expression, error_code)            \
-    do {                                                            \
-        if (expression) {                                           \
-            i32 WLCLIENT_CONCAT(saved_errno_, __LINE__) = errno;    \
-            WLCLIENT_LOG_ERR(                                       \
-                WLCLIENT_STRINGIFY(expression) " failed: %s",       \
-                strerror(WLCLIENT_CONCAT(saved_errno_, __LINE__))   \
-            );                                                      \
-            return (error_code);                                    \
-        }                                                           \
-    } while (0)

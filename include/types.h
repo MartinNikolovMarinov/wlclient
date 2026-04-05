@@ -44,7 +44,7 @@ typedef u32             rune; /* Runes represent a single UTF-32 encoded charact
 typedef enum wlclient_error_code {
     WLCLIENT_OK,
 
-    WLCLIENT_ERROR_CONNECT_FAILED,
+    WLCLIENT_ERROR_INIT_FAILED,
 
     WLCLIENT_SENTINEL
 } wlclient_error_code;
