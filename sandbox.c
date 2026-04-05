@@ -1,7 +1,10 @@
+#include "debug.h"
 #include "types.h"
 #include "wl-client.h"
 
-i32 main() {
-    i32 ret = wlclient_create_window(100, 200, "test");
-    return ret;
+i32 main(void) {
+    wlclient_log_set_level(WLCLIENT_LOG_LEVEL_TRACE);
+    wlclient_error_code ret = wlclient_init();
+    wlclient_shutdown();
+    return (i32) ret;
 }

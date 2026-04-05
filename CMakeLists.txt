@@ -4,16 +4,35 @@ project(wlclient VERSION 0.0.1 LANGUAGES C)
 set(target_wlclient wlclient)
 set(target_sandbox sandbox)
 
-# ---------------------------------------- Begin Standard Requirements -------------------------------------------------
+# Download and update git submodules:
+
+find_package(Git QUIET)
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.gitmodules")
+    if (GIT_FOUND)
+        message(STATUS "Submodule update")
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            RESULT_VARIABLE GIT_SUBMOD_RESULT
+        )
+        if (NOT GIT_SUBMOD_RESULT EQUAL "0")
+            message(FATAL_ERROR "git submodule update --init failed with ${GIT_SUBMOD_RESULT}, please checkout submodules")
+        endif()
+    else()
+        message(WARNING "Git is not found. It is required to update submodules.")
+    endif()
+else()
+    message(STATUS "No .gitmodules file found. Skipping submodule update.")
+endif()
+
+# Standard Requirements
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Generates compile_commands.json
 
-# ---------------------------------------- End Standard Requirements ---------------------------------------------------
-
-# Include cmake modules from:
+# Include cmake modules
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -62,6 +81,7 @@ log_info("---------------------------------------------")
 # ---------------------------------------- Begin Declare Source Files --------------------------------------------------
 
 set(src_wlclient
+    src/debug.c
     src/wl-client.c
 )
 
@@ -86,6 +106,8 @@ else()
     add_library(${target_wlclient} STATIC ${src_wlclient})
 endif()
 
+wlclient_target_set_default_c_flags(${target_wlclient} ${WLCLIENT_DEBUG} false)
+
 target_include_directories(${target_wlclient} PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/lib/wayland
@@ -95,11 +117,12 @@ target_compile_definitions(${target_wlclient} PUBLIC
     "WLCLIENT_DEBUG=$<BOOL:${WLCLIENT_DEBUG}>"
     "WLCLIENT_ASSERT_ENABLED=$<BOOL:${WLCLIENT_ASSERT_ENABLED}>"
 )
-wlclient_target_set_default_c_flags(${target_wlclient} ${WLCLIENT_DEBUG} false)
 target_compile_definitions(${target_wlclient} PRIVATE
     "WLCLIENT_LIBRARY_SHARED=$<BOOL:${WLCLIENT_LIBRARY_SHARED}>"
     "WLCLIENT_LIBRARY_BUILD=1"
 )
+
+target_link_libraries(${target_wlclient} PRIVATE wayland-client)
 
 if (WLCLIENT_BUILD_SANDBOX)
     # Build the development code

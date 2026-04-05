@@ -40,3 +40,11 @@ typedef u32             rune; /* Runes represent a single UTF-32 encoded charact
 #define WLCLIENT_SECOND       (UINT64_C(1000) * WLCLIENT_MILLISECOND)   /*     1_000_000_000ns */
 #define WLCLIENT_MINUTE       (UINT64_C(60)   * WLCLIENT_SECOND)        /*    60_000_000_000ns */
 #define WLCLIENT_HOUR         (UINT64_C(60)   * WLCLIENT_MINUTE)        /* 3_600_000_000_000ns */
+
+typedef enum wlclient_error_code {
+    WLCLIENT_OK,
+
+    WLCLIENT_ERROR_CONNECT_FAILED,
+
+    WLCLIENT_SENTINEL
+} wlclient_error_code;
