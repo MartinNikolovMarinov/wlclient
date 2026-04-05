@@ -2,37 +2,76 @@
 	"version": 3,
 	"configurePresets": [
 		{
-			"name": "release",
-			"displayName": "Release configuration",
-			"description": "Release configuration",
+			"name": "base",
+			"hidden": true,
 			"binaryDir": "${sourceDir}/build",
 			"cacheVariables": {
-				"CMAKE_C_COMPILER": "clang",
-				"CMAKE_CXX_COMPILER": "clang++",
-				"CMAKE_BUILD_TYPE": "Release",
-
-				"CORE_LIBRARY_SHARED": "OFF",
-
-				"HOT_SWAP": "OFF",
-				"USE_ANSI_LOGGING": "ON"
+				"WLCLIENT_ASSERT_ENABLED": "ON"
 			}
 		},
 		{
-			"name": "debug",
-			"displayName": "Debug configuration",
-			"description": "Debug configuration",
-			"binaryDir": "${sourceDir}/build",
+			"name": "debug-base",
+			"hidden": true,
+			"inherits": "base",
 			"cacheVariables": {
-				"CMAKE_C_COMPILER": "clang",
-				"CMAKE_CXX_COMPILER": "clang++",
 				"CMAKE_BUILD_TYPE": "Debug",
-
-				"CORE_LIBRARY_SHARED": "ON",
-
-				"HOT_SWAP": "ON",
-				"USE_ANSI_LOGGING": "ON"
+				"WLCLIENT_LIBRARY_SHARED": "ON",
+				"WLCLIENT_BUILD_SANDBOX": "ON",
+				"WLCLIENT_USE_LOGGING": "ON"
 			}
+		},
+		{
+			"name": "release-base",
+			"hidden": true,
+			"inherits": "base",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "Release",
+				"WLCLIENT_LIBRARY_SHARED": "OFF",
+				"WLCLIENT_BUILD_SANDBOX": "ON",
+				"WLCLIENT_USE_LOGGING": "OFF"
+			}
+		},
+
+		{
+			"name": "debug",
+			"displayName": "Debug configuration (Clang configuration alias).",
+			"description": "Alias to clang-debug.",
+			"inherits": "clang-debug"
+		},
+		{
+			"name": "release",
+			"displayName": "Release configuration (Clang configuration alias).",
+			"description": "Alias to clang-release.",
+			"inherits": "clang-release"
+		},
+
+		{
+			"name": "clang-debug",
+			"displayName": "Clang debug configuration.",
+			"description": "Debug build configured with the native Clang toolchain.",
+			"inherits": "debug-base",
+			"toolchainFile": "${sourceDir}/cmake/toolchains/clang-native.cmake"
+		},
+		{
+			"name": "clang-release",
+			"displayName": "Clang release configuration.",
+			"description": "Release build configured with the native Clang toolchain.",
+			"inherits": "release-base",
+			"toolchainFile": "${sourceDir}/cmake/toolchains/clang-native.cmake"
+		},
+		{
+			"name": "gcc-debug",
+			"displayName": "Gcc debug configuration.",
+			"description": "Debug build configured with the native gcc toolchain.",
+			"inherits": "debug-base",
+			"toolchainFile": "${sourceDir}/cmake/toolchains/gcc-native.cmake"
+		},
+		{
+			"name": "gcc-release",
+			"displayName": "Gcc release configuration.",
+			"description": "Release build configured with the native gcc toolchain.",
+			"inherits": "release-base",
+			"toolchainFile": "${sourceDir}/cmake/toolchains/gcc-native.cmake"
 		}
 	]
 }
-

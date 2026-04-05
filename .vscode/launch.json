@@ -2,30 +2,6 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug Sandbox with GUI Loader",
-            "type": "lldb",
-            "request": "launch",
-            "program": "${workspaceFolder}/build/wayland-gui-loader",
-            "args": [],
-            "cwd": "${workspaceFolder}",
-            "stopOnEntry": false,
-            "env": {},
-            "preLaunchTask": "Build with Makefile",
-        },
-
-        {
-            "name": "Debug Sandbox with GUI",
-            "type": "lldb",
-            "request": "launch",
-            "program": "${workspaceFolder}/build/wayland-gui",
-            "args": [],
-            "cwd": "${workspaceFolder}",
-            "stopOnEntry": false,
-            "env": {},
-            "preLaunchTask": "Build with Makefile",
-        },
-
-        {
             "name": "Debug Sandbox with Sandbox",
             "type": "lldb",
             "request": "launch",
