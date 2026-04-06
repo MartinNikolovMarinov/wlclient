@@ -45,6 +45,7 @@ typedef enum wlclient_error_code {
     WLCLIENT_OK,
 
     WLCLIENT_ERROR_INIT_FAILED,
+    WLCLIENT_ERROR_WINDOW_CREATE_FAILED,
 
     WLCLIENT_SENTINEL
 } wlclient_error_code;
