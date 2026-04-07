@@ -45,6 +45,7 @@ typedef enum wlclient_error_code {
     WLCLIENT_ERROR_EGL_WINDOW_CREATE_FAILED,
     WLCLIENT_ERROR_EGL_SET_CONTEXT_FAILED,
     WLCLIENT_ERROR_EGL_SWAP_BUFFERS_FAILED,
+    WLCLIENT_ERROR_EGL_SET_SWAP_INTERVAL_FAILED,
 
     WLCLIENT_SENTINEL
 } wlclient_error_code;
@@ -57,8 +58,14 @@ typedef struct wlclient_window {
 
 typedef struct wlclient_window_data {
     bool used;
+    // Logical window size in surface coordinates.
     i32 width, height;
+    // Actual pixel size of the render target backing the window.
+    i32 framebuffer_width, framebuffer_height;
+    // Compositor-provided logical size bounds.
     i32 max_width, max_height;
+    // Buffer scale used to derive framebuffer size from logical size.
+    i32 buffer_scale;
     // Surface is the raw drawable object. It represents a rectangular area to which to can attach pixel buffers.
     struct wl_surface* surface;
     // XDG Surface makes the raw surface participate in window management. Adds lifecycle sync (configure/ack).

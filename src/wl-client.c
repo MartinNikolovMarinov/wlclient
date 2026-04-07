@@ -28,15 +28,17 @@ static wlclient_window_data g_windows[WLCLIENT_WINDOWS_COUNT] = {0};
 // Backend hooks:
 static void (*wlclient_backend_shutdown)(void);
 static void (*wlclient_backend_destroy_window)(const wlclient_window* window);
-static void (*wlclient_backend_resize_window)(const wlclient_window* window, i32 width, i32 height);
+static void (*wlclient_backend_resize_window)(const wlclient_window* window, i32 framebuffer_width, i32 framebuffer_height);
 
 static void destroy_window_data(wlclient_window_data* window_data);
+static void update_framebuffer_size(const wlclient_window* window, wlclient_window_data* window_data);
 
 static void register_global(void* data, struct wl_registry* wl_registry, u32 name, const char* interface, u32 version);
 static void register_global_remove(void* data, struct wl_registry* wl_registry, u32 name);
+static void surface_preferred_buffer_scale(void* data, struct wl_surface* surface, i32 factor);
+
 static void xdg_wm_base_ping(void* data, struct xdg_wm_base* xdg_wm_base, u32 serial);
 static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, uint32_t serial);
-
 static void xdg_toplevel_close(void*, struct xdg_toplevel* toplevel);
 static void xdg_toplevel_configure(void*, struct xdg_toplevel* toplevel, i32 width, i32 height, struct wl_array* states);
 static void xdg_toplevel_configure_bounds(void*, struct xdg_toplevel* toplevel, i32 width, i32 height);
@@ -62,8 +64,20 @@ void wlclient_set_backend_destroy_window(void (*destroy_window)(const wlclient_w
     wlclient_backend_destroy_window = destroy_window;
 }
 
-void wlclient_set_backend_resize_window(void (*resize_window)(const wlclient_window* window, i32 width, i32 height)) {
+void wlclient_set_backend_resize_window(void (*resize_window)(const wlclient_window* window, i32 framebuffer_width, i32 framebuffer_height)) {
     wlclient_backend_resize_window = resize_window;
+}
+
+void wlclient_get_window_size(const wlclient_window* window, i32* width, i32* height) {
+    wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
+    if (width) *width = wdata->width;
+    if (height) *height = wdata->height;
+}
+
+void wlclient_get_framebuffer_size(const wlclient_window* window, i32* width, i32* height) {
+    wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
+    if (width) *width = wdata->framebuffer_width;
+    if (height) *height = wdata->framebuffer_height;
 }
 
 wlclient_error_code wlclient_init(void) {
@@ -161,6 +175,16 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
 
     wdata->surface = wl_compositor_create_surface(g_compositor);
     if (!wdata->surface) goto error;
+
+    const static struct wl_surface_listener surface_listener = {
+        .enter = NULL, // TODO: The null set listeners will crash if those events are ever triggered!
+        .leave = NULL,
+        .preferred_buffer_scale = surface_preferred_buffer_scale,
+        .preferred_buffer_transform = NULL,
+    };
+    ret = wl_surface_add_listener(wdata->surface, &surface_listener, window);
+    if (ret != 0) goto error;
+
     wdata->xdg_surface = xdg_wm_base_get_xdg_surface(g_xdgWmBase, wdata->surface);
     if (!wdata->xdg_surface) goto error;
     wdata->xdg_toplevel = xdg_surface_get_toplevel(wdata->xdg_surface);
@@ -168,10 +192,10 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
 
     xdg_toplevel_set_title(wdata->xdg_toplevel, title);
 
-    const static struct xdg_surface_listener surface_listener = {
+    const static struct xdg_surface_listener xdg_surface_listener = {
         .configure = xdg_surface_configure
     };
-    ret = xdg_surface_add_listener(wdata->xdg_surface, &surface_listener, window);
+    ret = xdg_surface_add_listener(wdata->xdg_surface, &xdg_surface_listener, window);
     if (ret != 0) goto error;
 
     const static struct xdg_toplevel_listener toplevel_listener = {
@@ -183,8 +207,11 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
     ret = xdg_toplevel_add_listener(wdata->xdg_toplevel, &toplevel_listener, window);
     if (ret != 0) goto error;
 
-    wdata->height = height;
     wdata->width = width;
+    wdata->height = height;
+    wdata->buffer_scale = 1;
+    wdata->framebuffer_width = width;
+    wdata->framebuffer_height = height;
     wdata->used = true; // This needs to set before the round trip.
 
     xdg_surface_set_window_geometry(wdata->xdg_surface, 0, 0, wdata->width, wdata->height);
@@ -225,6 +252,35 @@ static void destroy_window_data(wlclient_window_data* wdata) {
     memset(wdata, 0, sizeof(*wdata));
 }
 
+static void update_framebuffer_size(const wlclient_window* window, wlclient_window_data* wdata) {
+    // TODO: [FRACTIONAL_SCALING] Add wp_fractional_scale_v1 + wp_viewporter support and compute framebuffer size from
+    // the compositor's fractional preferred scale. The current wl_surface preferred_buffer_scale path is only the
+    // integer fallback.
+
+    i32 framebuffer_width = wdata->width * wdata->buffer_scale;
+    i32 framebuffer_height = wdata->height * wdata->buffer_scale;
+
+    if (framebuffer_width == wdata->framebuffer_width && framebuffer_height == wdata->framebuffer_height) {
+        return;
+    }
+
+    wdata->framebuffer_width = framebuffer_width;
+    wdata->framebuffer_height = framebuffer_height;
+
+    WLCLIENT_LOG_TRACE(
+        "Framebuffer size: logical=%" PRIi32 "x%" PRIi32 ", scale=%" PRIi32 ", framebuffer=%" PRIi32 "x%" PRIi32,
+        wdata->width,
+        wdata->height,
+        wdata->buffer_scale,
+        wdata->framebuffer_width,
+        wdata->framebuffer_height
+    );
+
+    if (wlclient_backend_resize_window && wdata->used) {
+        wlclient_backend_resize_window(window, wdata->framebuffer_width, wdata->framebuffer_height);
+    }
+}
+
 /**
 * This is the mechanism for discovering compositor capabilities. Called when the compositor announces a new global
 * interface.
@@ -257,8 +313,9 @@ static void register_global(void* data, struct wl_registry* wl_registry, u32 nam
         if (!g_xdgWmBase) return;
 
         // Setup ping handler
-        static struct xdg_wm_base_listener listender = {0};
-        listender.ping = xdg_wm_base_ping;
+        static const struct xdg_wm_base_listener listender = {
+            .ping = xdg_wm_base_ping
+        };
         i32 ret = xdg_wm_base_add_listener(g_xdgWmBase, &listender, NULL);
         WLCLIENT_ASSERT(ret == 0);
     }
@@ -300,6 +357,33 @@ static void xdg_wm_base_ping(void* data, struct xdg_wm_base* xdg_wm_base, u32 se
 }
 
 /**
+* This reports the compositor's preferred buffer scale for the surface. The client should render buffers at this
+* scale and advertise it back with wl_surface_set_buffer_scale.
+*
+* This happens:
+*   - after the surface becomes associated with outputs
+*   - whenever the compositor's preferred buffer scale changes
+*
+* Parameters:
+*   data    - user-provided wlclient_window pointer passed to wl_surface_add_listener
+*   surface - the wl_surface instance
+*   factor  - preferred buffer scale for the surface
+*/
+static void surface_preferred_buffer_scale(void* data, struct wl_surface* surface, i32 factor) {
+    wlclient_window* window = data;
+    wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
+
+    WLCLIENT_ASSERT(factor > 0);
+    if (wdata->buffer_scale == factor) return;
+
+    WLCLIENT_LOG_TRACE("Preferred buffer scale: %" PRIi32, factor);
+
+    wdata->buffer_scale = factor;
+    wl_surface_set_buffer_scale(surface, factor);
+    update_framebuffer_size(window, wdata);
+}
+
+/**
 * This is the configure handshake for the xdg_surface. The client must acknowledge the serial before presenting
 * content for that configure.
 *
@@ -313,8 +397,7 @@ static void xdg_wm_base_ping(void* data, struct xdg_wm_base* xdg_wm_base, u32 se
 *   serial      - serial number that must be acknowledged with xdg_surface_ack_configure
 */
 static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, uint32_t serial) {
-    wlclient_window* window = data;
-    (void)window;
+    (void)data;
 
     WLCLIENT_LOG_TRACE("Surface configure serial: %" PRIu32, serial);
     xdg_surface_ack_configure(xdg_surface, serial);
@@ -331,8 +414,7 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
 *   toplevel  - the xdg_toplevel instance
 */
 static void xdg_toplevel_close(void* data, struct xdg_toplevel* toplevel) {
-    wlclient_window* window = data;
-    (void)window;
+    (void)data;
     (void)toplevel;
 
     WLCLIENT_LOG_TRACE("Toplevel close");
@@ -368,10 +450,8 @@ static void xdg_toplevel_configure(void* data, struct xdg_toplevel* toplevel, i3
 
     wdata->width = new_width;
     wdata->height = new_height;
-
-    if (wlclient_backend_resize_window && wdata->used) {
-        wlclient_backend_resize_window(window, new_width, new_height);
-    }
+    xdg_surface_set_window_geometry(wdata->xdg_surface, 0, 0, wdata->width, wdata->height);
+    update_framebuffer_size(window, wdata);
 }
 
 /**
@@ -409,8 +489,7 @@ static void xdg_toplevel_configure_bounds(void* data, struct xdg_toplevel* tople
 *   caps      - array of xdg_toplevel_wm_capabilities values
 */
 static void xdg_toplevel_configure_wm_capabilities(void* data, struct xdg_toplevel* toplevel, struct wl_array* caps) {
-    wlclient_window* window = data;
-    (void)window;
+    (void)data;
     (void)toplevel;
 
     WLCLIENT_LOG_TRACE("Toplevel capabilities:");

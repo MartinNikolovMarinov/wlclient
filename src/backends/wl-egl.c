@@ -30,7 +30,7 @@ static wlclient_egl_window_data g_egl_window_data[WLCLIENT_WINDOWS_COUNT] = {0};
 
 static void egl_shutdown(void);
 static void egl_destroy_window(const wlclient_window* window);
-static void egl_resize_window(const wlclient_window* window, i32 width, i32 height);
+static void egl_resize_window(const wlclient_window* window, i32 framebuffer_width, i32 framebuffer_height);
 static void egl_log_error(void);
 static void egl_trace_attribs(const EGLint* attribs, const char* label);
 
@@ -101,7 +101,7 @@ wlclient_error_code wlclient_egl_config_window(wlclient_window* window) {
     wlclient_egl_window_data* egl_wdata = &g_egl_window_data[window->id];
     WLCLIENT_ASSERT(!egl_wdata->used);
 
-    egl_wdata->egl_window = wl_egl_window_create(wdata->surface, wdata->width, wdata->height);
+    egl_wdata->egl_window = wl_egl_window_create(wdata->surface, wdata->framebuffer_width, wdata->framebuffer_height);
     if (!egl_wdata->egl_window) goto error;
 
     g_context_attribs[g_context_attribs_count] = EGL_NONE;
@@ -129,7 +129,7 @@ error:
     return WLCLIENT_ERROR_EGL_WINDOW_CREATE_FAILED;
 }
 
-wlclient_error_code wlclient_egl_set_current_context(wlclient_window* window) {
+wlclient_error_code wlclient_egl_make_current_context(wlclient_window* window) {
     wlclient_egl_window_data* egl_wdata = &g_egl_window_data[window->id];
     WLCLIENT_ASSERT(egl_wdata->used);
 
@@ -146,6 +146,15 @@ wlclient_error_code wlclient_egl_set_current_context(wlclient_window* window) {
 error:
     egl_log_error();
     return WLCLIENT_ERROR_EGL_SET_CONTEXT_FAILED;
+}
+
+wlclient_error_code wlclient_egl_set_swap_interval(i32 interval) {
+    EGLBoolean ret = eglSwapInterval(g_egl_display, interval);
+    if (ret != EGL_TRUE) goto error;
+    return WLCLIENT_OK;
+error:
+    egl_log_error();
+    return WLCLIENT_ERROR_EGL_SET_SWAP_INTERVAL_FAILED;
 }
 
 wlclient_error_code wlclient_egl_swap_buffers(const wlclient_window* window) {
@@ -182,17 +191,17 @@ static void egl_destroy_window(const wlclient_window* window) {
     WLCLIENT_LOG_DEBUG("Destroyed");
 }
 
-static void egl_resize_window(const wlclient_window* window, i32 width, i32 height) {
+static void egl_resize_window(const wlclient_window* window, i32 framebuffer_width, i32 framebuffer_height) {
     wlclient_egl_window_data* egl_wdata = &g_egl_window_data[window->id];
     if (!egl_wdata->used || !egl_wdata->egl_window) return;
 
     WLCLIENT_LOG_DEBUG(
         "Resizing EGL window with id=%" PRIi32 " to %" PRIi32 "x%" PRIi32,
         window->id,
-        width,
-        height
+        framebuffer_width,
+        framebuffer_height
     );
-    wl_egl_window_resize(egl_wdata->egl_window, width, height, 0, 0);
+    wl_egl_window_resize(egl_wdata->egl_window, framebuffer_width, framebuffer_height, 0, 0);
 }
 
 static void egl_shutdown(void) {

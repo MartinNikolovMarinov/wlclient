@@ -48,12 +48,22 @@ i32 main(void) {
         return (i32) result_code;
     }
 
-    result_code = wlclient_egl_set_current_context(&window);
+    result_code = wlclient_egl_make_current_context(&window);
     if (result_code != WLCLIENT_OK) {
         return (i32) result_code;
     }
 
-    glViewport(0, 0, 200, 300);
+    // Configure vsync:
+    result_code = wlclient_egl_set_swap_interval(1);
+    if (result_code != WLCLIENT_OK) {
+        return (i32) result_code;
+    }
+
+    i32 framebuffer_width = 0;
+    i32 framebuffer_height = 0;
+    wlclient_get_framebuffer_size(&window, &framebuffer_width, &framebuffer_height);
+
+    glViewport(0, 0, framebuffer_width, framebuffer_height);
     glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
