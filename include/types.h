@@ -1,13 +1,8 @@
 #pragma once
 
-/*
-    IMPORTANT: It's best to avoid adding any includes to this file to avoid cyclic dependencies, because it is
-    literally included in every other file.
-*/
-
-/* Include system defaults. */
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 /* Basic types */
 typedef int8_t          i8;
@@ -46,6 +41,28 @@ typedef enum wlclient_error_code {
 
     WLCLIENT_ERROR_INIT_FAILED,
     WLCLIENT_ERROR_WINDOW_CREATE_FAILED,
+    WLCLIENT_ERROR_EGL_INIT_FAILED,
+    WLCLIENT_ERROR_EGL_WINDOW_CREATE_FAILED,
+    WLCLIENT_ERROR_EGL_SET_CONTEXT_FAILED,
+    WLCLIENT_ERROR_EGL_SWAP_BUFFERS_FAILED,
 
     WLCLIENT_SENTINEL
 } wlclient_error_code;
+
+typedef struct wlclient_window {
+    i32 id;
+} wlclient_window;
+
+#define WLCLIENT_WINDOWS_COUNT 5
+
+typedef struct wlclient_window_data {
+    bool used;
+    i32 width, height;
+    i32 max_width, max_height;
+    // Surface is the raw drawable object. It represents a rectangular area to which to can attach pixel buffers.
+    struct wl_surface* surface;
+    // XDG Surface makes the raw surface participate in window management. Adds lifecycle sync (configure/ack).
+    struct xdg_surface* xdg_surface;
+    // XDG Top level turns the surface into a real window. Adds window behavior.
+    struct xdg_toplevel* xdg_toplevel;
+} wlclient_window_data;

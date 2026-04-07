@@ -2,15 +2,15 @@
 #include "macro_magic.h"
 #include "types.h"
 #include "wl-client.h"
-#include "xdg-shell-client-protocol.h"
 
-#include <errno.h>
-#include <string.h>
-#include <stdbool.h>
 #include <inttypes.h>
-#include <wayland-util.h>
+#include <stdbool.h>
+#include <string.h>
+
+#include "xdg-shell-client-protocol.h"
 #include <wayland-client-core.h>
 #include <wayland-client-protocol.h>
+#include <wayland-util.h>
 
 // A wl_display object represents a client connection to a Wayland compositor.
 static struct wl_display* g_display = NULL;
@@ -22,22 +22,13 @@ static struct xdg_wm_base* g_xdgWmBase = NULL;
 // The compositor is the factory interface for creating surfaces and regions.
 static struct wl_compositor* g_compositor = NULL;
 
-// TODO: Make this dynamic memory:
-#define WLCLIENT_WINDOWS_COUNT 5
-
-typedef struct wlclient_window_data {
-    bool used;
-    i32 width, height;
-    i32 max_width, max_height;
-    // Surface is the raw drawable object. It represents a rectangular area to which to can attach pixel buffers.
-    struct wl_surface* surface;
-    // XDG Surface makes the raw surface participate in window management. Adds lifecycle sync (configure/ack).
-    struct xdg_surface* xdg_surface;
-    // XDG Top level turns the surface into a real window. Adds window behavior.
-    struct xdg_toplevel* xdg_toplevel;
-} wlclient_window_data;
-
+// State for all the open windows.
 static wlclient_window_data g_windows[WLCLIENT_WINDOWS_COUNT] = {0};
+
+// Backend hooks:
+static void (*wlclient_backend_shutdown)(void);
+static void (*wlclient_backend_destroy_window)(const wlclient_window* window);
+static void (*wlclient_backend_resize_window)(const wlclient_window* window, i32 width, i32 height);
 
 static void destroy_window_data(wlclient_window_data* window_data);
 
@@ -50,6 +41,30 @@ static void xdg_toplevel_close(void*, struct xdg_toplevel* toplevel);
 static void xdg_toplevel_configure(void*, struct xdg_toplevel* toplevel, i32 width, i32 height, struct wl_array* states);
 static void xdg_toplevel_configure_bounds(void*, struct xdg_toplevel* toplevel, i32 width, i32 height);
 static void xdg_toplevel_configure_wm_capabilities(void*, struct xdg_toplevel* toplevel, struct wl_array* caps);
+
+struct wl_display* wlclient_get_wl_display(void) {
+    WLCLIENT_ASSERT(g_display);
+    return g_display;
+}
+
+wlclient_window_data* wlclient_get_wl_window_data(const wlclient_window* window) {
+    WLCLIENT_ASSERT(window && window->id >= 0 && window->id < WLCLIENT_WINDOWS_COUNT);
+    wlclient_window_data* ret = &g_windows[window->id];
+    WLCLIENT_ASSERT(ret->used);
+    return ret;
+}
+
+void wlclient_set_backend_shutdown(void (*shutdown)(void)) {
+    wlclient_backend_shutdown = shutdown;
+}
+
+void wlclient_set_backend_destroy_window(void (*destroy_window)(const wlclient_window* window)) {
+    wlclient_backend_destroy_window = destroy_window;
+}
+
+void wlclient_set_backend_resize_window(void (*resize_window)(const wlclient_window* window, i32 width, i32 height)) {
+    wlclient_backend_resize_window = resize_window;
+}
 
 wlclient_error_code wlclient_init(void) {
     WLCLIENT_LOG_DEBUG("Initializing...");
@@ -65,7 +80,7 @@ wlclient_error_code wlclient_init(void) {
         if (!g_registry) goto error;
 
         // The registry listener is a callback table for the global object registry.
-        const struct wl_registry_listener registry_listener = {
+        const static struct wl_registry_listener registry_listener = {
             .global = register_global,
             .global_remove = register_global_remove,
         };
@@ -81,9 +96,6 @@ wlclient_error_code wlclient_init(void) {
 
     if (!g_compositor) goto error;
     if (!g_xdgWmBase) goto error;
-    // Panic(g_shm, "Compositor did not advertise wl_shm");
-    // Panic(g_seat, "Compositor did not advertise wl_seat");
-    // Panic(g_pixelFormat == PixelFormat::UNDEFINED, "Did not find supported pixel format");
 
     WLCLIENT_LOG_DEBUG("Initialization done");
     return WLCLIENT_OK;
@@ -95,6 +107,21 @@ error:
 
 void wlclient_shutdown(void) {
     WLCLIENT_LOG_DEBUG("Shuttingdown...");
+
+    for (i32 i = 0; i < WLCLIENT_WINDOWS_COUNT; i++) {
+        if (g_windows[i].used) {
+            wlclient_window window = { .id = i };
+            wlclient_destroy_window(&window);
+        }
+    }
+
+    wlclient_backend_destroy_window = NULL;
+    wlclient_backend_resize_window = NULL;
+
+    if (wlclient_backend_shutdown) {
+        wlclient_backend_shutdown();
+        wlclient_backend_shutdown = NULL;
+    }
 
     if (g_compositor) wl_compositor_destroy(g_compositor);
     if (g_xdgWmBase) xdg_wm_base_destroy(g_xdgWmBase);
@@ -113,11 +140,12 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
     i32 ret;
     wlclient_window_data* wdata = NULL;
 
-    if (!window) goto error;
-    if (!title) goto error;
+    WLCLIENT_ASSERT(window);
+    WLCLIENT_ASSERT(title);
 
     WLCLIENT_LOG_DEBUG("Creating window -- width=%" PRIi32 ", height=%" PRIi32 ", title=%s", width, height, title);
 
+    // Select an unused slot for the new window:
     window->id = -1;
     for (i32 i = 0; i < WLCLIENT_WINDOWS_COUNT; i++) {
         if (!g_windows[i].used) {
@@ -140,58 +168,61 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
 
     xdg_toplevel_set_title(wdata->xdg_toplevel, title);
 
-    struct xdg_surface_listener surface_listener = {0};
-    surface_listener.configure = xdg_surface_configure;
-    ret = xdg_surface_add_listener(wdata->xdg_surface, &surface_listener, wdata);
+    const static struct xdg_surface_listener surface_listener = {
+        .configure = xdg_surface_configure
+    };
+    ret = xdg_surface_add_listener(wdata->xdg_surface, &surface_listener, window);
     if (ret != 0) goto error;
 
-    struct xdg_toplevel_listener toplevel_listener = {0};
-    toplevel_listener.close = xdg_toplevel_close;
-    toplevel_listener.configure = xdg_toplevel_configure;
-    toplevel_listener.configure_bounds = xdg_toplevel_configure_bounds;
-    toplevel_listener.wm_capabilities = xdg_toplevel_configure_wm_capabilities;
-    ret = xdg_toplevel_add_listener(wdata->xdg_toplevel, &toplevel_listener, wdata);
+    const static struct xdg_toplevel_listener toplevel_listener = {
+        .close = xdg_toplevel_close,
+        .configure = xdg_toplevel_configure,
+        .configure_bounds = xdg_toplevel_configure_bounds,
+        .wm_capabilities = xdg_toplevel_configure_wm_capabilities,
+    };
+    ret = xdg_toplevel_add_listener(wdata->xdg_toplevel, &toplevel_listener, window);
     if (ret != 0) goto error;
 
     wdata->height = height;
     wdata->width = width;
+    wdata->used = true; // This needs to set before the round trip.
 
-    xdg_surface_set_window_geometry(wdata->xdg_surface, 0, 0, wdata->height, wdata->width);
+    xdg_surface_set_window_geometry(wdata->xdg_surface, 0, 0, wdata->width, wdata->height);
 
     // Sends all previously queued changes to the compositor and wait for the roundtrip:
     wl_surface_commit(wdata->surface);
     ret = wl_display_roundtrip(g_display);
     if (ret < 0) goto error;
 
-    wdata->used = true;
-
     WLCLIENT_LOG_DEBUG("Created successfully");
     return WLCLIENT_OK;
 
 error:
+    window->id = -1;
     destroy_window_data(wdata);
     return WLCLIENT_ERROR_WINDOW_CREATE_FAILED;
 }
 
 void wlclient_destroy_window(wlclient_window* window) {
-    if (!window || window->id < 0 || window->id >= WLCLIENT_WINDOWS_COUNT) return;
-    wlclient_window_data* wdata = &g_windows[window->id];
-    if (!wdata->used) return;
+    wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
 
     WLCLIENT_LOG_DEBUG("Destroying window with id=%" PRIi32 "...", window->id);
+    if (wlclient_backend_destroy_window) {
+        wlclient_backend_destroy_window(window);
+    }
     destroy_window_data(wdata);
     window->id = -1;
     WLCLIENT_LOG_DEBUG("Destroyed");
 }
 
-static void destroy_window_data(wlclient_window_data* window_data) {
-    if (!window_data) return;
+static void destroy_window_data(wlclient_window_data* wdata) {
+    if (!wdata) return;
 
-    if (window_data->xdg_toplevel) xdg_toplevel_destroy(window_data->xdg_toplevel);
-    if (window_data->xdg_surface) xdg_surface_destroy(window_data->xdg_surface);
-    if (window_data->surface) wl_surface_destroy(window_data->surface);
+    if (wdata->xdg_toplevel) xdg_toplevel_destroy(wdata->xdg_toplevel);
+    if (wdata->xdg_surface) xdg_surface_destroy(wdata->xdg_surface);
+    if (wdata->surface) wl_surface_destroy(wdata->surface);
 
-    memset(window_data, 0, sizeof(*window_data));
+    memset(wdata, 0, sizeof(*wdata));
 }
 
 /**
@@ -213,19 +244,23 @@ static void register_global(void* data, struct wl_registry* wl_registry, u32 nam
     (void)data;
 
     if (strcmp(interface, "wl_compositor") == 0) {
+        WLCLIENT_PANIC(!g_compositor, "wl_compositor re-registered");
+
         u32 effective_version = WLCLIENT_MIN((u32) wl_compositor_interface.version, version);
         g_compositor = wl_registry_bind(wl_registry, name, &wl_compositor_interface, effective_version);
     }
     else if (strcmp(interface, "xdg_wm_base") == 0) {
+        WLCLIENT_PANIC(!g_xdgWmBase, "xdg_wm_base re-registered");
+
         u32 effective_version = WLCLIENT_MIN((u32) xdg_wm_base_interface.version, version);
         g_xdgWmBase = wl_registry_bind(wl_registry, name, &xdg_wm_base_interface, effective_version);
         if (!g_xdgWmBase) return;
 
         // Setup ping handler
-        struct xdg_wm_base_listener listender = {0};
+        static struct xdg_wm_base_listener listender = {0};
         listender.ping = xdg_wm_base_ping;
         i32 ret = xdg_wm_base_add_listener(g_xdgWmBase, &listender, NULL);
-        (void) ret; // FIXME: Panic if this fails!
+        WLCLIENT_ASSERT(ret == 0);
     }
 }
 
@@ -273,12 +308,13 @@ static void xdg_wm_base_ping(void* data, struct xdg_wm_base* xdg_wm_base, u32 se
 *   - whenever the compositor sends a new surface configure event
 *
 * Parameters:
-*   data        - user-provided pointer passed to xdg_surface_add_listener
+*   data        - user-provided wlclient_window pointer passed to xdg_surface_add_listener
 *   xdg_surface - the xdg_surface instance
 *   serial      - serial number that must be acknowledged with xdg_surface_ack_configure
 */
 static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, uint32_t serial) {
-    (void)data;
+    wlclient_window* window = data;
+    (void)window;
 
     WLCLIENT_LOG_TRACE("Surface configure serial: %" PRIu32, serial);
     xdg_surface_ack_configure(xdg_surface, serial);
@@ -291,11 +327,12 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
 *   - when the compositor requests that the window be closed
 *
 * Parameters:
-*   data      - user-provided pointer passed to xdg_toplevel_add_listener
+*   data      - user-provided wlclient_window pointer passed to xdg_toplevel_add_listener
 *   toplevel  - the xdg_toplevel instance
 */
 static void xdg_toplevel_close(void* data, struct xdg_toplevel* toplevel) {
-    (void)data;
+    wlclient_window* window = data;
+    (void)window;
     (void)toplevel;
 
     WLCLIENT_LOG_TRACE("Toplevel close");
@@ -310,7 +347,7 @@ static void xdg_toplevel_close(void* data, struct xdg_toplevel* toplevel) {
 *   - whenever the compositor updates the window size or state
 *
 * Parameters:
-*   data      - user-provided pointer passed to xdg_toplevel_add_listener
+*   data      - user-provided wlclient_window pointer passed to xdg_toplevel_add_listener
 *   toplevel  - the xdg_toplevel instance
 *   width     - suggested logical window width, or 0 if unspecified
 *   height    - suggested logical window height, or 0 if unspecified
@@ -320,11 +357,21 @@ static void xdg_toplevel_configure(void* data, struct xdg_toplevel* toplevel, i3
     (void)toplevel;
     (void)states;
 
-    WLCLIENT_LOG_TRACE("Toplevel configure: size %" PRIi32 "x%" PRIi32, width, height);
+    wlclient_window* window = data;
+    wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
+    i32 new_width = width > 0 ? width : wdata->width;
+    i32 new_height = height > 0 ? height : wdata->height;
 
-    wlclient_window_data* wdata = data;
-    if (width > 0) wdata->width = width;
-    if (height > 0) wdata->height = height;
+    WLCLIENT_LOG_TRACE("Toplevel configure: size %" PRIi32 "x%" PRIi32, new_width, new_height);
+
+    if (new_width == wdata->width && new_height == wdata->height) return;
+
+    wdata->width = new_width;
+    wdata->height = new_height;
+
+    if (wlclient_backend_resize_window && wdata->used) {
+        wlclient_backend_resize_window(window, new_width, new_height);
+    }
 }
 
 /**
@@ -334,18 +381,18 @@ static void xdg_toplevel_configure(void* data, struct xdg_toplevel* toplevel, i3
 *   - when the compositor provides updated window bounds information
 *
 * Parameters:
-*   data      - user-provided pointer passed to xdg_toplevel_add_listener
+*   data      - user-provided wlclient_window pointer passed to xdg_toplevel_add_listener
 *   toplevel  - the xdg_toplevel instance
 *   width     - suggested maximum logical window width, or 0 if unspecified
 *   height    - suggested maximum logical window height, or 0 if unspecified
 */
 static void xdg_toplevel_configure_bounds(void* data, struct xdg_toplevel* toplevel, i32 width, i32 height) {
-    (void)data;
     (void)toplevel;
 
     WLCLIENT_LOG_TRACE("Toplevel bounds: size %" PRIi32 "x%" PRIi32, width, height);
 
-    wlclient_window_data* wdata = data;
+    wlclient_window* window = data;
+    wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
     if (width > 0) wdata->max_width = width;
     if (height > 0) wdata->max_height = height;
 }
@@ -357,12 +404,13 @@ static void xdg_toplevel_configure_bounds(void* data, struct xdg_toplevel* tople
 *   - when the compositor sends updated window management capabilities
 *
 * Parameters:
-*   data      - user-provided pointer passed to xdg_toplevel_add_listener
+*   data      - user-provided wlclient_window pointer passed to xdg_toplevel_add_listener
 *   toplevel  - the xdg_toplevel instance
 *   caps      - array of xdg_toplevel_wm_capabilities values
 */
 static void xdg_toplevel_configure_wm_capabilities(void* data, struct xdg_toplevel* toplevel, struct wl_array* caps) {
-    (void)data;
+    wlclient_window* window = data;
+    (void)window;
     (void)toplevel;
 
     WLCLIENT_LOG_TRACE("Toplevel capabilities:");

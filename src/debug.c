@@ -57,10 +57,9 @@ i32 wlclient_log_get_use_ansi(void) {
     return g_log_use_ansi;
 }
 
-void wlclient_log_message(
+void _wlclient_log_message(
     wlclient_log_level level,
-    const char* file_name,
-    i32 line_number,
+    const char* function_name,
     const char* format,
     ...
 ) {
@@ -73,16 +72,15 @@ void wlclient_log_message(
     if (g_log_use_ansi) {
         fprintf(
             stdout,
-            "%s[%s]%s %s:%d -- ",
+            "%s[%s]%s %s() -- ",
             wlclient_log_level_ansi_start(level),
             wlclient_log_level_name(level),
             ANSI_RESET(),
-            file_name,
-            line_number
+            function_name
         );
     }
     else {
-        fprintf(stdout, "[%s] %s:%d: ", wlclient_log_level_name(level), file_name, line_number);
+        fprintf(stdout, "[%s] %s() -- ", wlclient_log_level_name(level), function_name);
     }
 
     va_start(args, format);

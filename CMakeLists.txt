@@ -1,29 +1,10 @@
 cmake_minimum_required(VERSION 3.21)
 project(wlclient VERSION 0.0.1 LANGUAGES C)
 
+# TODO: Add option to include everything into a single header STB type library.
+
 set(target_wlclient wlclient)
 set(target_sandbox sandbox)
-
-# Download and update git submodules:
-
-find_package(Git QUIET)
-if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.gitmodules")
-    if (GIT_FOUND)
-        message(STATUS "Submodule update")
-        execute_process(
-            COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive
-            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-            RESULT_VARIABLE GIT_SUBMOD_RESULT
-        )
-        if (NOT GIT_SUBMOD_RESULT EQUAL "0")
-            message(FATAL_ERROR "git submodule update --init failed with ${GIT_SUBMOD_RESULT}, please checkout submodules")
-        endif()
-    else()
-        message(WARNING "Git is not found. It is required to update submodules.")
-    endif()
-else()
-    message(STATUS "No .gitmodules file found. Skipping submodule update.")
-endif()
 
 # Standard Requirements
 
@@ -56,6 +37,16 @@ else()
     set(WLCLIENT_DEBUG ON)
 endif()
 
+if(NOT WLCLIENT_BACKEND OR WLCLIENT_BACKEND STREQUAL "NONE")
+    set(WLCLIENT_BACKEND "NONE")
+elseif(WLCLIENT_BACKEND STREQUAL "EGL")
+    set(WLCLIENT_BACKEND_EGL TRUE)
+elseif(WLCLIENT_BACKEND STREQUAL "VULKAN")
+    set(WLCLIENT_BACKEND_VULKAN TRUE)
+else()
+    log_fatal("Unsupported backend: ${WLCLIENT_BACKEND}")
+endif()
+
 option(WLCLIENT_USE_LOGGING "Use ANSI escape codes in logging." OFF)
 option(WLCLIENT_BUILD_SANDBOX "Build sandbox test code." OFF)
 option(WLCLIENT_LIBRARY_SHARED "Build as shared library." OFF)
@@ -72,6 +63,7 @@ log_info("Compiler:          ${CMAKE_C_COMPILER_ID}")
 log_info("Debug:             ${WLCLIENT_DEBUG}")
 log_info("Asserts:           ${WLCLIENT_ASSERT_ENABLED}")
 log_info("Shared:            ${WLCLIENT_LIBRARY_SHARED}")
+log_info("Backend:           ${WLCLIENT_BACKEND}")
 log_info("Use logging:       ${WLCLIENT_USE_LOGGING}")
 log_info("Build Sandbox:     ${WLCLIENT_BUILD_SANDBOX}")
 log_info("---------------------------------------------")
@@ -87,6 +79,10 @@ set(src_wlclient
 
     lib/wayland/xdg-shell-client-protocol.c
 )
+
+if (WLCLIENT_BACKEND_EGL)
+    set(src_wlclient ${src_wlclient} src/backends/wl-egl.c)
+endif()
 
 set(src_sandbox
     sandbox.c
@@ -113,6 +109,7 @@ wlclient_target_set_default_c_flags(${target_wlclient} ${WLCLIENT_DEBUG} false)
 
 target_include_directories(${target_wlclient} PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/backends
     ${CMAKE_CURRENT_SOURCE_DIR}/lib/wayland
 )
 target_compile_definitions(${target_wlclient} PUBLIC
@@ -124,14 +121,20 @@ target_compile_definitions(${target_wlclient} PRIVATE
     "WLCLIENT_LIBRARY_SHARED=$<BOOL:${WLCLIENT_LIBRARY_SHARED}>"
     "WLCLIENT_LIBRARY_BUILD=1"
 )
-
 target_link_libraries(${target_wlclient} PRIVATE wayland-client)
+
+if (WLCLIENT_BACKEND_EGL)
+    target_compile_definitions(${target_wlclient} PUBLIC "WLCLIENT_BACKEND_EGL=1")
+elseif (WLCLIENT_BACKEND_VULKAN)
+    target_compile_definitions(${target_wlclient} PUBLIC "WLCLIENT_BACKEND_VULKAN=1")
+endif()
 
 if (WLCLIENT_BUILD_SANDBOX)
     # Build the development code
     add_executable(${target_sandbox} ${src_sandbox})
     wlclient_target_set_default_c_flags(${target_sandbox} ${WLCLIENT_DEBUG} false)
     target_link_libraries(${target_sandbox} PUBLIC ${target_wlclient})
+    target_link_libraries(${target_sandbox} PRIVATE wayland-egl EGL GLESv2)
 endif()
 
 # ---------------------------------------- END Create Executables ------------------------------------------------------

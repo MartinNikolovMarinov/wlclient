@@ -9,3 +9,5 @@
 #else
     #define WLCLIENT_API_EXPORT
 #endif
+
+#define WLCLIENT_API_INTERNAL

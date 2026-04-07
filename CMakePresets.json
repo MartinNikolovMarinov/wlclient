@@ -6,7 +6,8 @@
 			"hidden": true,
 			"binaryDir": "${sourceDir}/build",
 			"cacheVariables": {
-				"WLCLIENT_ASSERT_ENABLED": "ON"
+				"WLCLIENT_ASSERT_ENABLED": "ON",
+				"WLCLIENT_BACKEND": "EGL"
 			}
 		},
 		{
