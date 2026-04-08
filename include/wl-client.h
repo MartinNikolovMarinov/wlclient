@@ -6,8 +6,9 @@
 WLCLIENT_API_EXPORT wlclient_error_code wlclient_init(void);
 WLCLIENT_API_EXPORT void wlclient_shutdown(void);
 
-WLCLIENT_API_EXPORT wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* title, i32 decor_height, wlclient_window* window);
+WLCLIENT_API_EXPORT wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* title, const wlclient_decoration_config* dcor_cfg, wlclient_window* window);
 WLCLIENT_API_EXPORT void wlclient_destroy_window(wlclient_window* window);
+
 WLCLIENT_API_EXPORT void wlclient_get_window_size(const wlclient_window* window, i32* width, i32* height);
 WLCLIENT_API_EXPORT void wlclient_get_framebuffer_size(const wlclient_window* window, i32* width, i32* height);
 

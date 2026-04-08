@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include "debug.h"
 #include "macro_magic.h"
 #include "types.h"
@@ -6,6 +8,9 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <string.h>
+#include <unistd.h>
+
+#include <sys/mman.h>
 
 #include "xdg-shell-client-protocol.h"
 #include <wayland-client-core.h>
@@ -15,6 +20,7 @@
 // TODO: [VALGRIND] Investigate the valgrind report that lists some leakage and access patterns that are suspicious.
 //                  One way to check this is to see whether these problems happen for glfw as well.
 // TODO: [DECORATION] I should allow for the decoration to be disabled. That is a whole redesign on it's own for later.
+// TODO: [DECORATION] The current decoration rendering is double buffered by default. That should be configurable.
 
 // A wl_display object represents a client connection to a Wayland compositor.
 static struct wl_display* g_display = NULL;
@@ -43,16 +49,21 @@ static void (*wlclient_backend_shutdown)(void);
 static void (*wlclient_backend_destroy_window)(const wlclient_window* window);
 static void (*wlclient_backend_resize_window)(const wlclient_window* window, i32 framebuffer_width, i32 framebuffer_height);
 
-static void destroy_window_data(wlclient_window_data* window_data);
-static void update_framebuffer_size(const wlclient_window* window, wlclient_window_data* window_data);
+static void destroy_window_data(wlclient_window_data* wdata);
+static void destroy_decoration_buffers(wlclient_window_data* wdata);
+static void update_framebuffer_size(const wlclient_window* window, wlclient_window_data* wdata);
 
 static void register_global(void* data, struct wl_registry* wl_registry, u32 name, const char* interface, u32 version);
 static void register_global_remove(void* data, struct wl_registry* wl_registry, u32 name);
 static void surface_preferred_buffer_scale(void* data, struct wl_surface* surface, i32 factor);
-static void shm_pick_format(void *data, struct wl_shm *wl_shm, uint32_t format);
+static void shm_pick_format(void *data, struct wl_shm *wl_shm, u32 format);
+static void release_buffer(void *data, struct wl_buffer *wl_buffer);
+
+static void render_decoration(const wlclient_window* window);
+static void decoration_surface_done(void *data, struct wl_callback *wl_callback, u32 last_frame_time);
 
 static void xdg_wm_base_ping(void* data, struct xdg_wm_base* xdg_wm_base, u32 serial);
-static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, uint32_t serial);
+static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u32 serial);
 static void xdg_toplevel_close(void*, struct xdg_toplevel* toplevel);
 static void xdg_toplevel_configure(void*, struct xdg_toplevel* toplevel, i32 width, i32 height, struct wl_array* states);
 static void xdg_toplevel_configure_bounds(void*, struct xdg_toplevel* toplevel, i32 width, i32 height);
@@ -84,14 +95,14 @@ void wlclient_set_backend_resize_window(void (*resize_window)(const wlclient_win
 
 void wlclient_get_window_size(const wlclient_window* window, i32* width, i32* height) {
     wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
-    if (width) *width = wdata->width;
-    if (height) *height = wdata->height;
+    if (width) *width = wdata->logical_width;
+    if (height) *height = wdata->logical_height;
 }
 
 void wlclient_get_framebuffer_size(const wlclient_window* window, i32* width, i32* height) {
     wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
-    if (width) *width = wdata->framebuffer_width;
-    if (height) *height = wdata->framebuffer_height;
+    if (width) *width = wdata->framebuffer_pixel_width;
+    if (height) *height = wdata->framebuffer_pixel_height;
 }
 
 wlclient_error_code wlclient_init(void) {
@@ -177,15 +188,18 @@ void wlclient_shutdown(void) {
     WLCLIENT_LOG_DEBUG("Shutdown");
 }
 
-wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* title, i32 decor_height, wlclient_window* window) {
+wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* title, const wlclient_decoration_config* decor_cfg, wlclient_window* window) {
     i32 ret;
     wlclient_window_data* wdata = NULL;
 
     WLCLIENT_ASSERT(window);
     WLCLIENT_ASSERT(title);
 
-    // Clamp decor height
-    decor_height = WLCLIENT_MAX(decor_height, WLCLIENT_MIN_DECORATION_HEIGHT);
+    i32 decor_height = 0;
+    if (decor_cfg && decor_cfg->decor_height > 0) {
+        // Clamp decor height to a minimum in case a decoration is configured:
+        decor_height = WLCLIENT_MAX(decor_cfg->decor_height, WLCLIENT_MIN_DECORATION_HEIGHT);
+    }
 
     WLCLIENT_LOG_DEBUG("Creating window -- width=%" PRIi32 ", height=%" PRIi32 ", title=%s", width, height, title);
 
@@ -244,7 +258,7 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
     }
 
     // Create the decoration child surface after the parent has its toplevel role.
-    {
+    if (decor_height > 0) {
         wdata->decoration_surface = wl_compositor_create_surface(g_compositor);
         if (!wdata->decoration_surface) goto error;
 
@@ -257,30 +271,43 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
 
         // Position the decoration directly above the main content surface.
         wl_subsurface_set_position(wdata->decoration_subsurface, 0, -decor_height);
+
+        // Commit the decoration surface:
+        wl_surface_commit(wdata->decoration_surface);
     }
 
-    wdata->width = width;
-    wdata->height = height + decor_height;
-    wdata->content_width = width;
-    wdata->content_height = height;
+    wdata->logical_width = width;
+    wdata->logical_height = height + decor_height;
+    wdata->content_logical_width = width;
+    wdata->content_logical_height = height;
     wdata->buffer_scale = 1;
-    wdata->framebuffer_width = width;
-    wdata->framebuffer_height = height;
-    wdata->decoration_height = decor_height;
+    wdata->framebuffer_pixel_width = width;
+    wdata->framebuffer_pixel_height = height;
+    wdata->decoration_logical_height = decor_height;
+    wdata->decoration_pixel_height = decor_height;
+    wdata->decoration_anon_file_fd = -1; // mark the inital decoration anon file to something strictly invalid.
+    wdata->decoration_pixel_width = width;
     wdata->used = true; // This needs to set before the round trip.
+    wdata->pending = WLCLIENT_PENDING_DECORATION_RESIZE | WLCLIENT_PENDING_BACKEND_RESIZE;
 
-    // TODO: provide a way to set x and y offset to position the window somewhere.
-    xdg_surface_set_window_geometry(
-        wdata->xdg_surface,
-        0, -wdata->decoration_height,
-        wdata->width, wdata->height
-    );
-
-    // Finally, commit the surfaces and roundtrip to synchronize the new window creation.
-    wl_surface_commit(wdata->decoration_surface);
+    // Commit the main surface and roundtrip to synchronize the new window creation.
+    // The roundtrip dispatches the first xdg_surface_configure, which creates the decoration buffers.
     wl_surface_commit(wdata->surface);
     ret = wl_display_roundtrip(g_display);
     if (ret < 0) goto error;
+
+    // Kick off the decoration frame loop. Buffers now exist after the configure roundtrip.
+    if (decor_height > 0) {
+        // Request next frame:
+        struct wl_callback* cb = wl_surface_frame(wdata->decoration_surface);
+        static const struct wl_callback_listener listener = {
+            .done = decoration_surface_done,
+        };
+        wl_callback_add_listener(cb, &listener, window);
+
+        // Render;
+        render_decoration(window);
+    }
 
     WLCLIENT_LOG_DEBUG("Created successfully");
     return WLCLIENT_ERROR_OK;
@@ -308,6 +335,11 @@ static void destroy_window_data(wlclient_window_data* wdata) {
 
     if (wdata->xdg_toplevel) xdg_toplevel_destroy(wdata->xdg_toplevel);
     if (wdata->xdg_surface) xdg_surface_destroy(wdata->xdg_surface);
+
+    destroy_decoration_buffers(wdata);
+
+    if (wdata->decoration_anon_file_fd >= 0) close(wdata->decoration_anon_file_fd);
+    if (wdata->decoration_shm_pool) wl_shm_pool_destroy(wdata->decoration_shm_pool);
     if (wdata->decoration_subsurface) wl_subsurface_destroy(wdata->decoration_subsurface);
     if (wdata->decoration_surface) wl_surface_destroy(wdata->decoration_surface);
     if (wdata->surface) wl_surface_destroy(wdata->surface);
@@ -315,32 +347,50 @@ static void destroy_window_data(wlclient_window_data* wdata) {
     memset(wdata, 0, sizeof(*wdata));
 }
 
+static void destroy_decoration_buffers(wlclient_window_data* wdata) {
+    i32 buffers_count = (i32) WLCLIENT_ARRAY_SIZE(wdata->decoration_buffers);
+
+    if (wdata->decoration_pixel_data) {
+        usize pool_size = (usize)(wdata->decoration_pixel_width * WLCLIENT_BYTES_PER_PIXEL * wdata->decoration_pixel_height) * (usize) buffers_count;
+        munmap(wdata->decoration_pixel_data, pool_size);
+        wdata->decoration_pixel_data = NULL;
+    }
+
+    for (i32 i = 0; i < buffers_count; i++) {
+        if (wdata->decoration_buffers[i]) {
+            wl_buffer_destroy(wdata->decoration_buffers[i]);
+            wdata->decoration_buffers[i] = NULL;
+        }
+        wdata->decoration_buffer_ready_states[i] = false;
+    }
+}
+
 static void update_framebuffer_size(const wlclient_window* window, wlclient_window_data* wdata) {
     // TODO: [FRACTIONAL_SCALING] Add wp_fractional_scale_v1 + wp_viewporter support and compute framebuffer size from
     // the compositor's fractional preferred scale. The current wl_surface preferred_buffer_scale path is only the
     // integer fallback.
 
-    i32 framebuffer_width = wdata->content_width * wdata->buffer_scale;
-    i32 framebuffer_height = wdata->content_height * wdata->buffer_scale;
+    i32 framebuffer_width = wdata->content_logical_width * wdata->buffer_scale;
+    i32 framebuffer_height = wdata->content_logical_height * wdata->buffer_scale;
 
-    if (framebuffer_width == wdata->framebuffer_width && framebuffer_height == wdata->framebuffer_height) {
+    if (framebuffer_width == wdata->framebuffer_pixel_width && framebuffer_height == wdata->framebuffer_pixel_height) {
         return;
     }
 
-    wdata->framebuffer_width = framebuffer_width;
-    wdata->framebuffer_height = framebuffer_height;
+    wdata->framebuffer_pixel_width = framebuffer_width;
+    wdata->framebuffer_pixel_height = framebuffer_height;
 
     WLCLIENT_LOG_TRACE(
         "Framebuffer size: content=%" PRIi32 "x%" PRIi32 ", scale=%" PRIi32 ", framebuffer=%" PRIi32 "x%" PRIi32,
-        wdata->content_width,
-        wdata->content_height,
+        wdata->content_logical_width,
+        wdata->content_logical_height,
         wdata->buffer_scale,
-        wdata->framebuffer_width,
-        wdata->framebuffer_height
+        wdata->framebuffer_pixel_width,
+        wdata->framebuffer_pixel_height
     );
 
     if (wlclient_backend_resize_window && wdata->used) {
-        wlclient_backend_resize_window(window, wdata->framebuffer_width, wdata->framebuffer_height);
+        wlclient_backend_resize_window(window, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
     }
 }
 
@@ -431,6 +481,98 @@ static void shm_pick_format(void *data, struct wl_shm *wl_shm, u32 format) {
 }
 
 /**
+* This signals that the compositor is done reading from the buffer and the client may reuse it.
+*
+* This happens:
+*   - after the compositor finishes displaying a committed buffer
+*
+* Parameters:
+*   data      - pointer to the corresponding decoration_buffer_ready_states entry
+*   wl_buffer - the wl_buffer instance being released
+*/
+static void release_buffer(void *data, struct wl_buffer *wl_buffer) {
+    (void)wl_buffer;
+
+    WLCLIENT_LOG_TRACE("Buffer released");
+    bool* ready = data;
+    *ready = true;
+}
+
+static void render_decoration(const wlclient_window* window) {
+    wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
+    if (wdata->decoration_logical_height <= 0) {
+        WLCLIENT_LOG_TRACE(
+            "Decoration logical height is %"PRIi32"; which means \"do not rebder decoration\"",
+            wdata->decoration_logical_height
+        );
+        return;
+    }
+
+    // Find a ready buffer
+    i32 buf_idx = -1;
+    for (i32 i = 0; i < (i32) WLCLIENT_ARRAY_SIZE(wdata->decoration_buffers); i++) {
+        if (wdata->decoration_buffer_ready_states[i]) {
+            buf_idx = i;
+            break;
+        }
+    }
+    if (buf_idx < 0) return; // no buffer available
+
+    WLCLIENT_LOG_TRACE("Buffer Index = %"PRIi32"", buf_idx);
+
+    // TODO: draw actual decoration content
+    i32 buf_size = (wdata->decoration_pixel_width * WLCLIENT_BYTES_PER_PIXEL) * wdata->decoration_pixel_height;
+    i32 pixel_count = wdata->decoration_pixel_width * wdata->decoration_pixel_height;
+    u8* pixels = wdata->decoration_pixel_data + (buf_idx * buf_size);
+    for (i32 p = 0; p < pixel_count; p++) {
+        pixels[p * WLCLIENT_BYTES_PER_PIXEL + 0] = 0xFF; // B
+        pixels[p * WLCLIENT_BYTES_PER_PIXEL + 1] = 0x00; // G
+        pixels[p * WLCLIENT_BYTES_PER_PIXEL + 2] = 0x00; // R
+        pixels[p * WLCLIENT_BYTES_PER_PIXEL + 3] = 0xFF; // A
+    }
+
+    // TODO: [OPTIMIZATION] The current surface is always demaged, which is probably not what you want for a decoration.
+    //       It should only be demaged on certain events.
+    wdata->decoration_buffer_ready_states[buf_idx] = false;
+    wl_surface_attach(wdata->decoration_surface, wdata->decoration_buffers[buf_idx], 0, 0);
+    wl_surface_damage_buffer(wdata->decoration_surface, 0, 0, wdata->decoration_pixel_width, wdata->decoration_pixel_height);
+    wl_surface_commit(wdata->decoration_surface);
+}
+
+/**
+* Frame callback for the decoration subsurface. The compositor calls this when it is ready for the client to render
+* and commit the next decoration frame. This drives the decoration's render loop.
+*
+* This happens:
+*   - once per compositor refresh cycle, after the previous decoration frame has been presented
+*
+* Parameters:
+*   data            - user-provided wlclient_window pointer passed to wl_callback_add_listener
+*   wl_callback     - the wl_callback instance for the completed frame
+*   last_frame_time - compositor timestamp in milliseconds of the last frame presentation
+*/
+static void decoration_surface_done(void *data, struct wl_callback *wl_callback, u32 last_frame_time) {
+    (void) last_frame_time;
+
+    WLCLIENT_LOG_TRACE("Decoration surface done");
+
+	wlclient_window* window = data;
+    wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
+
+    wl_callback_destroy(wl_callback);
+
+    // Request the next frame before rendering — wlclient_render_decoration commits the surface,
+    // and the commit is what delivers the frame request to the compositor.
+    struct wl_callback* cb = wl_surface_frame(wdata->decoration_surface);
+    static const struct wl_callback_listener listener = {
+        .done = decoration_surface_done,
+    };
+    wl_callback_add_listener(cb, &listener, window);
+
+    render_decoration(window);
+}
+
+/**
 * This is the mechanism for learning that a previously advertised global interface has been removed from the registry.
 *
 * This happens:
@@ -489,12 +631,16 @@ static void surface_preferred_buffer_scale(void* data, struct wl_surface* surfac
 
     wdata->buffer_scale = factor;
     wl_surface_set_buffer_scale(surface, factor);
-    update_framebuffer_size(window, wdata);
+    if (wdata->decoration_surface) {
+        wl_surface_set_buffer_scale(wdata->decoration_surface, factor);
+    }
+    wdata->pending |= WLCLIENT_PENDING_DECORATION_RESIZE | WLCLIENT_PENDING_BACKEND_RESIZE;
 }
 
 /**
-* This is the configure handshake for the xdg_surface. The client must acknowledge the serial before presenting
-* content for that configure.
+* Handles the xdg_surface configure handshake. This is a synchronization point where the client applies any pending
+* surface state changes for the configure, then acknowledges the serial before attaching and committing content for that
+* state.
 *
 * This happens:
 *   - after the initial surface commit
@@ -505,10 +651,117 @@ static void surface_preferred_buffer_scale(void* data, struct wl_surface* surfac
 *   xdg_surface - the xdg_surface instance
 *   serial      - serial number that must be acknowledged with xdg_surface_ack_configure
 */
-static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, uint32_t serial) {
-    (void)data;
-
+static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u32 serial) {
     WLCLIENT_LOG_TRACE("Surface configure serial: %" PRIu32, serial);
+
+    wlclient_window* window = data;
+    wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
+
+    if (wdata->decoration_logical_height > 0 && wdata->pending & WLCLIENT_PENDING_DECORATION_RESIZE) {
+        // Create or resize the decoration's shared memory backing store.
+        //
+        // The decoration uses a single memfd-backed wl_shm_pool that holds all double-buffer slots contiguously.
+        // Each slot is (width * BYTES_PER_PIXEL * height) bytes. Individual buffer regions are accessed at offset
+        // (buffer_index * slot_size) within decoration_pixel_data.
+        //
+        // On resize, the pool and fd are only recreated if the new size exceeds the current allocation. The wl_buffers,
+        // mmap, and pixel data are always recreated since they encode specific dimensions, but that should be a
+        // relatively cheap operation.
+
+        i32 new_decor_width = wdata->logical_width * wdata->buffer_scale;
+        i32 new_decor_height = wdata->decoration_logical_height * wdata->buffer_scale;
+        i32 decor_buffers_count = (i32) WLCLIENT_ARRAY_SIZE(wdata->decoration_buffers);
+        i32 decor_buf_size = (new_decor_width * WLCLIENT_BYTES_PER_PIXEL) * new_decor_height;
+        i32 decor_old_pool_size = (wdata->decoration_pixel_width * WLCLIENT_BYTES_PER_PIXEL) * wdata->decoration_pixel_height * decor_buffers_count;
+        i32 decor_new_pool_size = decor_buf_size * decor_buffers_count;
+
+        // Re-create the temporary file and shm pool if the new decoration size won't fit. This logic only ever
+        // increases the size of the decoration buffer but never shrinks it.
+        // TODO: This strategy needs to be tested out for flickering or performance problems on initial resizes that
+        // make the window bigger.
+        bool recreate_temporary_file = wdata->decoration_anon_file_fd < 0 || decor_old_pool_size < decor_new_pool_size;
+        if (recreate_temporary_file) {
+            // Close the old anonymous file:
+            if (wdata->decoration_anon_file_fd >= 0) {
+                close(wdata->decoration_anon_file_fd);
+                wdata->decoration_anon_file_fd = -1;
+            }
+            // Destroy the old pool:
+            if (wdata->decoration_shm_pool) {
+                wl_shm_pool_destroy(wdata->decoration_shm_pool);
+                wdata->decoration_shm_pool = NULL;
+            }
+
+            wdata->decoration_anon_file_fd = memfd_create("tmp", 0);
+            WLCLIENT_PANIC(wdata->decoration_anon_file_fd >= 0, "Failed to create temporary anonymous file");
+
+            i32 ret = ftruncate(wdata->decoration_anon_file_fd, decor_new_pool_size);
+            WLCLIENT_PANIC(ret == 0, "Failed to truncate temporary anonymous file");
+
+            wdata->decoration_shm_pool = wl_shm_create_pool(g_shm, wdata->decoration_anon_file_fd, decor_new_pool_size);
+            WLCLIENT_PANIC(wdata->decoration_shm_pool, "Failed to create decoration shm pool");
+        }
+
+        destroy_decoration_buffers(wdata);
+
+        wdata->decoration_pixel_width = new_decor_width;
+        wdata->decoration_pixel_height = new_decor_height;
+
+        // Re-create the decoration buffers
+        {
+            wdata->decoration_pixel_data = mmap(
+                NULL,
+                (usize) decor_new_pool_size,
+                PROT_READ | PROT_WRITE, MAP_SHARED,
+                wdata->decoration_anon_file_fd,
+                0
+            );
+            WLCLIENT_PANIC(wdata->decoration_pixel_data != MAP_FAILED, "Failed mmap decoration pixel data");
+            memset(wdata->decoration_pixel_data, 0, (usize) decor_new_pool_size);
+
+            for (i32 i = 0; i < decor_buffers_count; i++) {
+                i32 offset = (i32) i * decor_buf_size;
+                wdata->decoration_buffers[i] = wl_shm_pool_create_buffer(
+                    wdata->decoration_shm_pool, offset,
+                    wdata->decoration_pixel_width, wdata->decoration_pixel_height, wdata->decoration_pixel_width * WLCLIENT_BYTES_PER_PIXEL,
+                    (u32) g_preffered_pixel_format
+                );
+                WLCLIENT_PANIC(wdata->decoration_buffers[i], "Failed to crate decoration buffer from pool");
+
+                static struct wl_buffer_listener listender = {
+                    .release = release_buffer,
+                };
+                i32 ret = wl_buffer_add_listener(wdata->decoration_buffers[i], &listender, &wdata->decoration_buffer_ready_states[i]);
+                WLCLIENT_PANIC(ret == 0, "Failed to set release buffer listener");
+
+                wdata->decoration_buffer_ready_states[i] = true;
+            }
+        }
+
+        // Hint to the compositor that the decor region will be non-transperant.
+        {
+            struct wl_region* empty_region = wl_compositor_create_region(g_compositor);
+            WLCLIENT_PANIC(empty_region, "wl_compositor_create_region failed");
+
+            wl_region_add(empty_region, 0, 0, wdata->decoration_pixel_width, wdata->decoration_pixel_height);
+            wl_surface_set_opaque_region(wdata->decoration_surface, empty_region);
+            wl_region_destroy(empty_region);
+        }
+
+        xdg_surface_set_window_geometry(
+            wdata->xdg_surface,
+            0, -wdata->decoration_logical_height,
+            wdata->logical_width, wdata->logical_height
+        );
+    }
+
+    if (wdata->pending & WLCLIENT_PENDING_BACKEND_RESIZE) {
+        update_framebuffer_size(window, wdata);
+    }
+
+    wdata->pending = WLCLIENT_PENDING_NONE;
+
+    // Acknowledge the current configuration handshake with the compositor.
     xdg_surface_ack_configure(xdg_surface, serial);
 }
 
@@ -550,10 +803,10 @@ static void xdg_toplevel_configure(void* data, struct xdg_toplevel* toplevel, i3
 
     wlclient_window* window = data;
     wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
-    i32 new_window_width = width > 0 ? width : wdata->width;
-    i32 new_window_height = height > 0 ? height : wdata->height;
+    i32 new_window_width = width > 0 ? width : wdata->logical_width;
+    i32 new_window_height = height > 0 ? height : wdata->logical_height;
     i32 new_content_width = new_window_width;
-    i32 new_content_height = WLCLIENT_MAX(new_window_height - wdata->decoration_height, WLCLIENT_MIN_DECORATION_HEIGHT + 1); // TODO: [Decoration] this should be equal to 1 in case there is no decoration ?
+    i32 new_content_height = WLCLIENT_MAX(new_window_height - wdata->decoration_logical_height, 1);
 
     WLCLIENT_LOG_TRACE(
         "Toplevel configure: window=%" PRIi32 "x%" PRIi32 ", content=%" PRIi32 "x%" PRIi32,
@@ -563,18 +816,20 @@ static void xdg_toplevel_configure(void* data, struct xdg_toplevel* toplevel, i3
         new_content_height
     );
 
-    if (new_window_width == wdata->width && new_window_height == wdata->height) return;
+    if (new_window_width == wdata->logical_width && new_window_height == wdata->logical_height) {
+        return;
+    }
 
-    wdata->width = new_window_width;
-    wdata->height = new_window_height;
-    wdata->content_width = new_content_width;
-    wdata->content_height = new_content_height;
-    xdg_surface_set_window_geometry(
-        wdata->xdg_surface,
-        0, -wdata->decoration_height,
-        wdata->width, wdata->height
-    );
-    update_framebuffer_size(window, wdata);
+    if (new_window_width != wdata->logical_width) {
+        // resize the decoration only when the logical width has changed.
+        wdata->pending |= WLCLIENT_PENDING_DECORATION_RESIZE;
+    }
+
+    wdata->logical_width = new_window_width;
+    wdata->logical_height = new_window_height;
+    wdata->content_logical_width = new_content_width;
+    wdata->content_logical_height = new_content_height;
+    wdata->pending |= WLCLIENT_PENDING_BACKEND_RESIZE;
 }
 
 /**
@@ -596,8 +851,8 @@ static void xdg_toplevel_configure_bounds(void* data, struct xdg_toplevel* tople
 
     wlclient_window* window = data;
     wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
-    if (width > 0) wdata->max_width = width;
-    if (height > 0) wdata->max_height = height;
+    if (width > 0) wdata->max_logical_width = width;
+    if (height > 0) wdata->max_logical_height = height;
 }
 
 /**

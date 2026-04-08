@@ -101,7 +101,7 @@ wlclient_error_code wlclient_egl_config_window(wlclient_window* window) {
     wlclient_egl_window_data* egl_wdata = &g_egl_window_data[window->id];
     WLCLIENT_ASSERT(!egl_wdata->used);
 
-    egl_wdata->egl_window = wl_egl_window_create(wdata->surface, wdata->framebuffer_width, wdata->framebuffer_height);
+    egl_wdata->egl_window = wl_egl_window_create(wdata->surface, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
     if (!egl_wdata->egl_window) goto error;
 
     g_context_attribs[g_context_attribs_count] = EGL_NONE;

@@ -7,3 +7,5 @@
 
 #define WLCLIENT_MIN(a, b) ((a) < (b) ? (a) : (b))
 #define WLCLIENT_MAX(a, b) ((a) > (b) ? (a) : (b))
+
+#define WLCLIENT_ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))

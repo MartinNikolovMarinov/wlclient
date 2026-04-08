@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <wayland-client-protocol.h>
 
 /* Basic types */
 typedef int8_t          i8;
@@ -55,29 +56,58 @@ typedef struct wlclient_window {
 } wlclient_window;
 
 #define WLCLIENT_WINDOWS_COUNT 5
+#define WLCLIENT_BYTES_PER_PIXEL 4
+
+typedef enum {
+    WLCLIENT_PENDING_NONE              = 0,
+    WLCLIENT_PENDING_DECORATION_RESIZE = 1 << 0, // Recreate decoration buffers and update window geometry.
+    WLCLIENT_PENDING_BACKEND_RESIZE    = 1 << 1, // Recompute framebuffer size and notify the backend.
+} wlclient_pending_flags;
+
+typedef struct wlclient_decoration_config {
+    i32 decor_height;
+} wlclient_decoration_config;
+
+static const struct wlclient_decoration_config wlclient_no_decoration_config = {0};
 
 typedef struct wlclient_window_data {
     bool used;
-    // Logical window geometry size in surface coordinates, including client-side decorations.
-    i32 width, height;
-    // Logical size of the main content surface, excluding client-side decorations.
-    i32 content_width, content_height;
-    // Actual pixel size of the render target backing the main content surface.
-    i32 framebuffer_width, framebuffer_height;
-    // Compositor-provided logical size bounds.
-    i32 max_width, max_height;
-    // Buffer scale used to derive framebuffer size from logical size.
+    wlclient_pending_flags pending;
+
+    // Logical window geometry in surface coordinates, including client-side decorations.
+    i32 logical_width, logical_height;
+    // Logical content area, excluding client-side decorations.
+    i32 content_logical_width, content_logical_height;
+    // Pixel dimensions of the render target (content logical size * buffer_scale).
+    i32 framebuffer_pixel_width, framebuffer_pixel_height;
+    // Compositor-suggested maximum logical size.
+    i32 max_logical_width, max_logical_height;
+    // Integer scale factor from the compositor. Multiplied with logical sizes to get pixel sizes.
     i32 buffer_scale;
-    // Surface is the raw drawable object. It represents a rectangular area to which to can attach pixel buffers.
+
+    // Core wayland surface — the drawable area that pixel buffers attach to.
     struct wl_surface* surface;
-    // XDG Surface makes the raw surface participate in window management. Adds lifecycle sync (configure/ack).
+    // XDG surface role — adds configure/ack lifecycle to the raw surface.
     struct xdg_surface* xdg_surface;
-    // XDG Top level turns the surface into a real window. Adds window behavior.
+    // XDG toplevel role — makes the surface a desktop window with title, close, resize, etc.
     struct xdg_toplevel* xdg_toplevel;
-    // Decoration surface is the subsurface for client rendered decorations.
+
+    // Decoration subsurface, positioned above the main surface to render the title bar.
     struct wl_surface* decoration_surface;
-    // The subsurface object is used to define the relationship between the main surface and the decoration_surface.
+    // Binds decoration_surface as a child of the main surface.
     struct wl_subsurface* decoration_subsurface;
-    // The hight for the decoration in pixels.
-    i32 decoration_height;
+    // Logical decoration height in surface coordinates. Immutable after window creation.
+    i32 decoration_logical_height;
+    // Decoration dimensions in pixels (logical size * buffer_scale).
+    i32 decoration_pixel_height, decoration_pixel_width;
+    // Anonymous file backing the shm pool.
+    i32 decoration_anon_file_fd;
+    // Pool shared with the compositor.
+    struct wl_shm_pool* decoration_shm_pool;
+    // Double-buffered wl_buffer handles into the pool.
+    struct wl_buffer* decoration_buffers[2];
+    // True when the compositor has released the buffer.
+    bool decoration_buffer_ready_states[2];
+    // Single mmap of the entire pool.
+    u8* decoration_pixel_data;
 } wlclient_window_data;
