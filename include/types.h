@@ -37,7 +37,7 @@ typedef u32             rune; /* Runes represent a single UTF-32 encoded charact
 #define WLCLIENT_HOUR         (UINT64_C(60)   * WLCLIENT_MINUTE)        /* 3_600_000_000_000ns */
 
 typedef enum wlclient_error_code {
-    WLCLIENT_OK,
+    WLCLIENT_ERROR_OK,
 
     WLCLIENT_ERROR_INIT_FAILED,
     WLCLIENT_ERROR_WINDOW_CREATE_FAILED,
@@ -47,7 +47,7 @@ typedef enum wlclient_error_code {
     WLCLIENT_ERROR_EGL_SWAP_BUFFERS_FAILED,
     WLCLIENT_ERROR_EGL_SET_SWAP_INTERVAL_FAILED,
 
-    WLCLIENT_SENTINEL
+    WLCLIENT_ERROR_SENTINEL
 } wlclient_error_code;
 
 typedef struct wlclient_window {

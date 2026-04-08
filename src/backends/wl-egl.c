@@ -88,7 +88,7 @@ wlclient_error_code wlclient_egl_init(EGLenum api) {
     egl_reset_config_attrs();
 
     WLCLIENT_LOG_DEBUG("EGL backend initialization done...");
-    return WLCLIENT_OK;
+    return WLCLIENT_ERROR_OK;
 
 error:
     egl_log_error();
@@ -120,13 +120,22 @@ wlclient_error_code wlclient_egl_config_window(wlclient_window* window) {
     egl_wdata->used = true;
     egl_reset_context_attrs();
 
-    return WLCLIENT_OK;
+    return WLCLIENT_ERROR_OK;
 
 error:
     egl_log_error();
     egl_reset_context_attrs();
     egl_destroy_window(window);
     return WLCLIENT_ERROR_EGL_WINDOW_CREATE_FAILED;
+}
+
+wlclient_error_code wlclient_egl_set_swap_interval(i32 interval) {
+    EGLBoolean ret = eglSwapInterval(g_egl_display, interval);
+    if (ret != EGL_TRUE) goto error;
+    return WLCLIENT_ERROR_OK;
+error:
+    egl_log_error();
+    return WLCLIENT_ERROR_EGL_SET_SWAP_INTERVAL_FAILED;
 }
 
 wlclient_error_code wlclient_egl_make_current_context(wlclient_window* window) {
@@ -141,20 +150,11 @@ wlclient_error_code wlclient_egl_make_current_context(wlclient_window* window) {
     );
     if (ret != EGL_TRUE) goto error;
 
-    return WLCLIENT_OK;
+    return WLCLIENT_ERROR_OK;
 
 error:
     egl_log_error();
     return WLCLIENT_ERROR_EGL_SET_CONTEXT_FAILED;
-}
-
-wlclient_error_code wlclient_egl_set_swap_interval(i32 interval) {
-    EGLBoolean ret = eglSwapInterval(g_egl_display, interval);
-    if (ret != EGL_TRUE) goto error;
-    return WLCLIENT_OK;
-error:
-    egl_log_error();
-    return WLCLIENT_ERROR_EGL_SET_SWAP_INTERVAL_FAILED;
 }
 
 wlclient_error_code wlclient_egl_swap_buffers(const wlclient_window* window) {
@@ -163,7 +163,7 @@ wlclient_error_code wlclient_egl_swap_buffers(const wlclient_window* window) {
 
     if (eglSwapBuffers(g_egl_display, egl_wdata->egl_surface) != EGL_TRUE) goto error;
 
-    return WLCLIENT_OK;
+    return WLCLIENT_ERROR_OK;
 
 error:
     egl_log_error();

@@ -6,6 +6,8 @@
 
 #include <stdlib.h> // IWYU pragma: keep
 
+// TODO: [ERROR_DIAGNOSTICS] I need some better diagnostics for error handling. It should work as a stack trace.
+
 typedef enum wlclient_log_level {
     WLCLIENT_LOG_LEVEL_TRACE = 0,
     WLCLIENT_LOG_LEVEL_DEBUG,

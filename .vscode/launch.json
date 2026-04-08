@@ -8,6 +8,9 @@
             "program": "${workspaceFolder}/build/sandbox",
             "args": [],
             "cwd": "${workspaceFolder}",
+            "sourceMap": {
+                "./build": "${workspaceFolder}",
+            },
             "stopOnEntry": false,
             "env": {},
             "preLaunchTask": "Build with Makefile",

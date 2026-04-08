@@ -2,6 +2,7 @@
 #include <EGL/eglext.h>
 #include <GL/gl.h>
 
+#include <stdio.h>
 #include <unistd.h>
 
 #include "debug.h"
@@ -16,13 +17,15 @@ i32 main(void) {
     // wlclient_log_set_level(WLCLIENT_LOG_LEVEL_DEBUG);
     // wlclient_log_set_level(WLCLIENT_LOG_LEVEL_FATAL);
     result_code = wlclient_init();
-    if (result_code != WLCLIENT_OK) {
+    if (result_code != WLCLIENT_ERROR_OK) {
+        printf("ERROR - %d\n", result_code);
         return (i32) result_code;
     }
 
     wlclient_window window;
     result_code = wlclient_create_window(200, 300, "Testing", &window);
-    if (result_code != WLCLIENT_OK) {
+    if (result_code != WLCLIENT_ERROR_OK) {
+        printf("ERROR - %d\n", result_code);
         return (i32) result_code;
     }
 
@@ -35,7 +38,8 @@ i32 main(void) {
 
     // EGL_OPENGL_ES_API
     result_code = wlclient_egl_init(EGL_OPENGL_API);
-    if (result_code != WLCLIENT_OK) {
+    if (result_code != WLCLIENT_ERROR_OK) {
+        printf("ERROR - %d\n", result_code);
         return (i32) result_code;
     }
 
@@ -44,18 +48,21 @@ i32 main(void) {
     wlclient_egl_add_context_attr(EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR);
 
     result_code = wlclient_egl_config_window(&window);
-    if (result_code != WLCLIENT_OK) {
+    if (result_code != WLCLIENT_ERROR_OK) {
+        printf("ERROR - %d\n", result_code);
         return (i32) result_code;
     }
 
     result_code = wlclient_egl_make_current_context(&window);
-    if (result_code != WLCLIENT_OK) {
+    if (result_code != WLCLIENT_ERROR_OK) {
+        printf("ERROR - %d\n", result_code);
         return (i32) result_code;
     }
 
     // Configure vsync:
     result_code = wlclient_egl_set_swap_interval(1);
-    if (result_code != WLCLIENT_OK) {
+    if (result_code != WLCLIENT_ERROR_OK) {
+        printf("ERROR - %d\n", result_code);
         return (i32) result_code;
     }
 
@@ -68,7 +75,8 @@ i32 main(void) {
     glClear(GL_COLOR_BUFFER_BIT);
 
     result_code = wlclient_egl_swap_buffers(&window);
-    if (result_code != WLCLIENT_OK) {
+    if (result_code != WLCLIENT_ERROR_OK) {
+        printf("ERROR - %d\n", result_code);
         return (i32) result_code;
     }
 

@@ -22,6 +22,11 @@ static struct xdg_wm_base* g_xdgWmBase = NULL;
 // The compositor is the factory interface for creating surfaces and regions.
 static struct wl_compositor* g_compositor = NULL;
 
+// A singleton global object that provides support for shared memory.
+static struct wl_shm* g_shm = NULL;
+// The preffered pixel format for software rendering.
+static i32 g_preffered_pixel_format = -1;
+
 // State for all the open windows.
 static wlclient_window_data g_windows[WLCLIENT_WINDOWS_COUNT] = {0};
 
@@ -36,6 +41,7 @@ static void update_framebuffer_size(const wlclient_window* window, wlclient_wind
 static void register_global(void* data, struct wl_registry* wl_registry, u32 name, const char* interface, u32 version);
 static void register_global_remove(void* data, struct wl_registry* wl_registry, u32 name);
 static void surface_preferred_buffer_scale(void* data, struct wl_surface* surface, i32 factor);
+static void shm_pick_format(void *data, struct wl_shm *wl_shm, uint32_t format);
 
 static void xdg_wm_base_ping(void* data, struct xdg_wm_base* xdg_wm_base, u32 serial);
 static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, uint32_t serial);
@@ -101,7 +107,7 @@ wlclient_error_code wlclient_init(void) {
         ret = wl_registry_add_listener(g_registry, &registry_listener, NULL);
         if (ret != 0) goto error;
 
-        // Block until all pending request are processed
+        // Block until all pending request to discover globals are processed.
         ret = wl_display_roundtrip(g_display);
         if (ret < 0) goto error;
 
@@ -110,9 +116,16 @@ wlclient_error_code wlclient_init(void) {
 
     if (!g_compositor) goto error;
     if (!g_xdgWmBase) goto error;
+    if (!g_shm) goto error;
+
+    // Do a second roundtrip to receive events emitted by newly bound globals (like wl_shm).
+    ret = wl_display_roundtrip(g_display);
+    if (ret < 0) goto error;
+
+    if (g_preffered_pixel_format < 0) goto error;
 
     WLCLIENT_LOG_DEBUG("Initialization done");
-    return WLCLIENT_OK;
+    return WLCLIENT_ERROR_OK;
 
 error:
     wlclient_shutdown();
@@ -139,13 +152,16 @@ void wlclient_shutdown(void) {
 
     if (g_compositor) wl_compositor_destroy(g_compositor);
     if (g_xdgWmBase) xdg_wm_base_destroy(g_xdgWmBase);
+    if (g_shm) wl_shm_destroy(g_shm);
     if (g_registry) wl_registry_destroy(g_registry);
     if (g_display) wl_display_disconnect(g_display);
 
+    g_compositor = NULL;
+    g_xdgWmBase = NULL;
+    g_shm = NULL;
+    g_preffered_pixel_format = -1;
     g_registry = NULL;
     g_display = NULL;
-    g_xdgWmBase = NULL;
-    g_compositor = NULL;
 
     WLCLIENT_LOG_DEBUG("Shutdown");
 }
@@ -222,7 +238,7 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
     if (ret < 0) goto error;
 
     WLCLIENT_LOG_DEBUG("Created successfully");
-    return WLCLIENT_OK;
+    return WLCLIENT_ERROR_OK;
 
 error:
     window->id = -1;
@@ -299,6 +315,8 @@ static void update_framebuffer_size(const wlclient_window* window, wlclient_wind
 static void register_global(void* data, struct wl_registry* wl_registry, u32 name, const char* interface, u32 version) {
     (void)data;
 
+    WLCLIENT_LOG_TRACE("Register global received for interface = %s", interface);
+
     if (strcmp(interface, "wl_compositor") == 0) {
         WLCLIENT_PANIC(!g_compositor, "wl_compositor re-registered");
 
@@ -317,7 +335,33 @@ static void register_global(void* data, struct wl_registry* wl_registry, u32 nam
             .ping = xdg_wm_base_ping
         };
         i32 ret = xdg_wm_base_add_listener(g_xdgWmBase, &listender, NULL);
-        WLCLIENT_ASSERT(ret == 0);
+        WLCLIENT_PANIC(ret == 0, "failed to setup xdg base ping listener");
+    }
+    else if (strcmp(interface, "wl_shm") == 0) {
+        WLCLIENT_PANIC(!g_shm, "wl_shm re-registered");
+
+        u32 effective_version = WLCLIENT_MIN((u32) wl_shm_interface.version, version);
+        g_shm = wl_registry_bind(wl_registry, name, &wl_shm_interface, effective_version);
+        if (!g_shm) return;
+
+        static const struct wl_shm_listener listener = {
+            .format = shm_pick_format
+        };
+        i32 ret = wl_shm_add_listener(g_shm, &listener, NULL);
+        WLCLIENT_PANIC(ret == 0, "failed to setup shm format listener");
+    }
+}
+
+static void shm_pick_format(void *data, struct wl_shm *wl_shm, u32 format) {
+    (void)data;
+    (void)wl_shm;
+
+    WLCLIENT_LOG_TRACE("Supported pixel format %" PRIu32, format);
+
+    // The spec states that ARGB8888 and XRGB8888 should be supported by all renderers.
+    if (format == WL_SHM_FORMAT_ARGB8888) {
+        g_preffered_pixel_format = (i32) WL_SHM_FORMAT_ARGB8888;
+        WLCLIENT_LOG_DEBUG("Pixel format set to %" PRIu32, format);
     }
 }
 
