@@ -12,6 +12,10 @@
 #include <wayland-client-protocol.h>
 #include <wayland-util.h>
 
+// TODO: [VALGRIND] Investigate the valgrind report that lists some leakage and access patterns that are suspicious.
+//                  One way to check this is to see whether these problems happen for glfw as well.
+// TODO: [DECORATION] I should allow for the decoration to be disabled. That is a whole redesign on it's own for later.
+
 // A wl_display object represents a client connection to a Wayland compositor.
 static struct wl_display* g_display = NULL;
 // The registry object is the compositor’s global object list. Exposes all global interfaces provided by the compositor.
@@ -21,11 +25,15 @@ static struct xdg_wm_base* g_xdgWmBase = NULL;
 
 // The compositor is the factory interface for creating surfaces and regions.
 static struct wl_compositor* g_compositor = NULL;
+// The global interface exposing sub-surface compositing capabilities. This is needed for the decoration subsurface.
+static struct wl_subcompositor* g_subcompositor = NULL;
 
 // A singleton global object that provides support for shared memory.
 static struct wl_shm* g_shm = NULL;
 // The preffered pixel format for software rendering.
 static i32 g_preffered_pixel_format = -1;
+
+#define WLCLIENT_MIN_DECORATION_HEIGHT 20
 
 // State for all the open windows.
 static wlclient_window_data g_windows[WLCLIENT_WINDOWS_COUNT] = {0};
@@ -94,7 +102,7 @@ wlclient_error_code wlclient_init(void) {
     g_display = wl_display_connect(NULL);
     if (!g_display) goto error;
 
-    // Setup the registry
+    // Setup the global registry
     {
         g_registry = wl_display_get_registry(g_display);
         if (!g_registry) goto error;
@@ -115,6 +123,7 @@ wlclient_error_code wlclient_init(void) {
     }
 
     if (!g_compositor) goto error;
+    if (!g_subcompositor) goto error;
     if (!g_xdgWmBase) goto error;
     if (!g_shm) goto error;
 
@@ -151,12 +160,14 @@ void wlclient_shutdown(void) {
     }
 
     if (g_compositor) wl_compositor_destroy(g_compositor);
+    if (g_subcompositor) wl_subcompositor_destroy(g_subcompositor);
     if (g_xdgWmBase) xdg_wm_base_destroy(g_xdgWmBase);
     if (g_shm) wl_shm_destroy(g_shm);
     if (g_registry) wl_registry_destroy(g_registry);
     if (g_display) wl_display_disconnect(g_display);
 
     g_compositor = NULL;
+    g_subcompositor = NULL;
     g_xdgWmBase = NULL;
     g_shm = NULL;
     g_preffered_pixel_format = -1;
@@ -166,12 +177,15 @@ void wlclient_shutdown(void) {
     WLCLIENT_LOG_DEBUG("Shutdown");
 }
 
-wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* title, wlclient_window* window) {
+wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* title, i32 decor_height, wlclient_window* window) {
     i32 ret;
     wlclient_window_data* wdata = NULL;
 
     WLCLIENT_ASSERT(window);
     WLCLIENT_ASSERT(title);
+
+    // Clamp decor height
+    decor_height = WLCLIENT_MAX(decor_height, WLCLIENT_MIN_DECORATION_HEIGHT);
 
     WLCLIENT_LOG_DEBUG("Creating window -- width=%" PRIi32 ", height=%" PRIi32 ", title=%s", width, height, title);
 
@@ -189,50 +203,81 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
         goto error;
     }
 
-    wdata->surface = wl_compositor_create_surface(g_compositor);
-    if (!wdata->surface) goto error;
+    // Create Surface
+    {
+        wdata->surface = wl_compositor_create_surface(g_compositor);
+        if (!wdata->surface) goto error;
 
-    const static struct wl_surface_listener surface_listener = {
-        .enter = NULL, // TODO: The null set listeners will crash if those events are ever triggered!
-        .leave = NULL,
-        .preferred_buffer_scale = surface_preferred_buffer_scale,
-        .preferred_buffer_transform = NULL,
-    };
-    ret = wl_surface_add_listener(wdata->surface, &surface_listener, window);
-    if (ret != 0) goto error;
+        const static struct wl_surface_listener surface_listener = {
+            .enter = NULL, // TODO: The null set listeners will crash if those events are ever triggered!
+            .leave = NULL,
+            .preferred_buffer_scale = surface_preferred_buffer_scale,
+            .preferred_buffer_transform = NULL,
+        };
+        ret = wl_surface_add_listener(wdata->surface, &surface_listener, window);
+        if (ret != 0) goto error;
+    }
 
-    wdata->xdg_surface = xdg_wm_base_get_xdg_surface(g_xdgWmBase, wdata->surface);
-    if (!wdata->xdg_surface) goto error;
-    wdata->xdg_toplevel = xdg_surface_get_toplevel(wdata->xdg_surface);
-    if (!wdata->xdg_toplevel) goto error;
+    // Create XDG Surface and TopLevel role.
+    {
+        wdata->xdg_surface = xdg_wm_base_get_xdg_surface(g_xdgWmBase, wdata->surface);
+        if (!wdata->xdg_surface) goto error;
+        wdata->xdg_toplevel = xdg_surface_get_toplevel(wdata->xdg_surface);
+        if (!wdata->xdg_toplevel) goto error;
 
-    xdg_toplevel_set_title(wdata->xdg_toplevel, title);
+        xdg_toplevel_set_title(wdata->xdg_toplevel, title);
 
-    const static struct xdg_surface_listener xdg_surface_listener = {
-        .configure = xdg_surface_configure
-    };
-    ret = xdg_surface_add_listener(wdata->xdg_surface, &xdg_surface_listener, window);
-    if (ret != 0) goto error;
+        const static struct xdg_surface_listener xdg_surface_listener = {
+            .configure = xdg_surface_configure
+        };
+        ret = xdg_surface_add_listener(wdata->xdg_surface, &xdg_surface_listener, window);
+        if (ret != 0) goto error;
 
-    const static struct xdg_toplevel_listener toplevel_listener = {
-        .close = xdg_toplevel_close,
-        .configure = xdg_toplevel_configure,
-        .configure_bounds = xdg_toplevel_configure_bounds,
-        .wm_capabilities = xdg_toplevel_configure_wm_capabilities,
-    };
-    ret = xdg_toplevel_add_listener(wdata->xdg_toplevel, &toplevel_listener, window);
-    if (ret != 0) goto error;
+        const static struct xdg_toplevel_listener toplevel_listener = {
+            .close = xdg_toplevel_close,
+            .configure = xdg_toplevel_configure,
+            .configure_bounds = xdg_toplevel_configure_bounds,
+            .wm_capabilities = xdg_toplevel_configure_wm_capabilities,
+        };
+        ret = xdg_toplevel_add_listener(wdata->xdg_toplevel, &toplevel_listener, window);
+        if (ret != 0) goto error;
+    }
+
+    // Create the decoration child surface after the parent has its toplevel role.
+    {
+        wdata->decoration_surface = wl_compositor_create_surface(g_compositor);
+        if (!wdata->decoration_surface) goto error;
+
+        wdata->decoration_subsurface = wl_subcompositor_get_subsurface(
+            g_subcompositor,
+            wdata->decoration_surface,
+            wdata->surface
+        );
+        if (!wdata->decoration_subsurface) goto error;
+
+        // Position the decoration directly above the main content surface.
+        wl_subsurface_set_position(wdata->decoration_subsurface, 0, -decor_height);
+    }
 
     wdata->width = width;
-    wdata->height = height;
+    wdata->height = height + decor_height;
+    wdata->content_width = width;
+    wdata->content_height = height;
     wdata->buffer_scale = 1;
     wdata->framebuffer_width = width;
     wdata->framebuffer_height = height;
+    wdata->decoration_height = decor_height;
     wdata->used = true; // This needs to set before the round trip.
 
-    xdg_surface_set_window_geometry(wdata->xdg_surface, 0, 0, wdata->width, wdata->height);
+    // TODO: provide a way to set x and y offset to position the window somewhere.
+    xdg_surface_set_window_geometry(
+        wdata->xdg_surface,
+        0, -wdata->decoration_height,
+        wdata->width, wdata->height
+    );
 
-    // Sends all previously queued changes to the compositor and wait for the roundtrip:
+    // Finally, commit the surfaces and roundtrip to synchronize the new window creation.
+    wl_surface_commit(wdata->decoration_surface);
     wl_surface_commit(wdata->surface);
     ret = wl_display_roundtrip(g_display);
     if (ret < 0) goto error;
@@ -263,6 +308,8 @@ static void destroy_window_data(wlclient_window_data* wdata) {
 
     if (wdata->xdg_toplevel) xdg_toplevel_destroy(wdata->xdg_toplevel);
     if (wdata->xdg_surface) xdg_surface_destroy(wdata->xdg_surface);
+    if (wdata->decoration_subsurface) wl_subsurface_destroy(wdata->decoration_subsurface);
+    if (wdata->decoration_surface) wl_surface_destroy(wdata->decoration_surface);
     if (wdata->surface) wl_surface_destroy(wdata->surface);
 
     memset(wdata, 0, sizeof(*wdata));
@@ -273,8 +320,8 @@ static void update_framebuffer_size(const wlclient_window* window, wlclient_wind
     // the compositor's fractional preferred scale. The current wl_surface preferred_buffer_scale path is only the
     // integer fallback.
 
-    i32 framebuffer_width = wdata->width * wdata->buffer_scale;
-    i32 framebuffer_height = wdata->height * wdata->buffer_scale;
+    i32 framebuffer_width = wdata->content_width * wdata->buffer_scale;
+    i32 framebuffer_height = wdata->content_height * wdata->buffer_scale;
 
     if (framebuffer_width == wdata->framebuffer_width && framebuffer_height == wdata->framebuffer_height) {
         return;
@@ -284,9 +331,9 @@ static void update_framebuffer_size(const wlclient_window* window, wlclient_wind
     wdata->framebuffer_height = framebuffer_height;
 
     WLCLIENT_LOG_TRACE(
-        "Framebuffer size: logical=%" PRIi32 "x%" PRIi32 ", scale=%" PRIi32 ", framebuffer=%" PRIi32 "x%" PRIi32,
-        wdata->width,
-        wdata->height,
+        "Framebuffer size: content=%" PRIi32 "x%" PRIi32 ", scale=%" PRIi32 ", framebuffer=%" PRIi32 "x%" PRIi32,
+        wdata->content_width,
+        wdata->content_height,
         wdata->buffer_scale,
         wdata->framebuffer_width,
         wdata->framebuffer_height
@@ -323,6 +370,12 @@ static void register_global(void* data, struct wl_registry* wl_registry, u32 nam
         u32 effective_version = WLCLIENT_MIN((u32) wl_compositor_interface.version, version);
         g_compositor = wl_registry_bind(wl_registry, name, &wl_compositor_interface, effective_version);
     }
+    else if (strcmp(interface, "wl_subcompositor") == 0) {
+        WLCLIENT_PANIC(!g_subcompositor, "wl_subcompositor re-registered");
+
+        u32 effective_version = WLCLIENT_MIN((u32) wl_subcompositor_interface.version, version);
+        g_subcompositor = wl_registry_bind(wl_registry, name, &wl_subcompositor_interface, effective_version);
+    }
     else if (strcmp(interface, "xdg_wm_base") == 0) {
         WLCLIENT_PANIC(!g_xdgWmBase, "xdg_wm_base re-registered");
 
@@ -352,6 +405,18 @@ static void register_global(void* data, struct wl_registry* wl_registry, u32 nam
     }
 }
 
+/**
+* This advertises one supported shared-memory pixel format for wl_shm buffers.
+*
+* This happens:
+*   - after binding the wl_shm global
+*   - once for each pixel format supported by the compositor
+*
+* Parameters:
+*   data   - user-provided pointer passed to wl_shm_add_listener
+*   wl_shm - the wl_shm instance
+*   format - one advertised wl_shm_format value supported by the compositor
+*/
 static void shm_pick_format(void *data, struct wl_shm *wl_shm, u32 format) {
     (void)data;
     (void)wl_shm;
@@ -485,16 +550,30 @@ static void xdg_toplevel_configure(void* data, struct xdg_toplevel* toplevel, i3
 
     wlclient_window* window = data;
     wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
-    i32 new_width = width > 0 ? width : wdata->width;
-    i32 new_height = height > 0 ? height : wdata->height;
+    i32 new_window_width = width > 0 ? width : wdata->width;
+    i32 new_window_height = height > 0 ? height : wdata->height;
+    i32 new_content_width = new_window_width;
+    i32 new_content_height = WLCLIENT_MAX(new_window_height - wdata->decoration_height, WLCLIENT_MIN_DECORATION_HEIGHT + 1); // TODO: [Decoration] this should be equal to 1 in case there is no decoration ?
 
-    WLCLIENT_LOG_TRACE("Toplevel configure: size %" PRIi32 "x%" PRIi32, new_width, new_height);
+    WLCLIENT_LOG_TRACE(
+        "Toplevel configure: window=%" PRIi32 "x%" PRIi32 ", content=%" PRIi32 "x%" PRIi32,
+        new_window_width,
+        new_window_height,
+        new_content_width,
+        new_content_height
+    );
 
-    if (new_width == wdata->width && new_height == wdata->height) return;
+    if (new_window_width == wdata->width && new_window_height == wdata->height) return;
 
-    wdata->width = new_width;
-    wdata->height = new_height;
-    xdg_surface_set_window_geometry(wdata->xdg_surface, 0, 0, wdata->width, wdata->height);
+    wdata->width = new_window_width;
+    wdata->height = new_window_height;
+    wdata->content_width = new_content_width;
+    wdata->content_height = new_content_height;
+    xdg_surface_set_window_geometry(
+        wdata->xdg_surface,
+        0, -wdata->decoration_height,
+        wdata->width, wdata->height
+    );
     update_framebuffer_size(window, wdata);
 }
 

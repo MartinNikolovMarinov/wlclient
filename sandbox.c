@@ -19,14 +19,14 @@ i32 main(void) {
     result_code = wlclient_init();
     if (result_code != WLCLIENT_ERROR_OK) {
         printf("ERROR - %d\n", result_code);
-        return (i32) result_code;
+        goto error;
     }
 
     wlclient_window window;
-    result_code = wlclient_create_window(200, 300, "Testing", &window);
+    result_code = wlclient_create_window(200, 300, "Testing", 50, &window);
     if (result_code != WLCLIENT_ERROR_OK) {
         printf("ERROR - %d\n", result_code);
-        return (i32) result_code;
+        goto error;
     }
 
     wlclient_egl_add_config_attr(EGL_SURFACE_TYPE, EGL_WINDOW_BIT);
@@ -40,7 +40,7 @@ i32 main(void) {
     result_code = wlclient_egl_init(EGL_OPENGL_API);
     if (result_code != WLCLIENT_ERROR_OK) {
         printf("ERROR - %d\n", result_code);
-        return (i32) result_code;
+        goto error;
     }
 
     wlclient_egl_add_context_attr(EGL_CONTEXT_MAJOR_VERSION, 4);
@@ -50,20 +50,20 @@ i32 main(void) {
     result_code = wlclient_egl_config_window(&window);
     if (result_code != WLCLIENT_ERROR_OK) {
         printf("ERROR - %d\n", result_code);
-        return (i32) result_code;
+        goto error;
     }
 
     result_code = wlclient_egl_make_current_context(&window);
     if (result_code != WLCLIENT_ERROR_OK) {
         printf("ERROR - %d\n", result_code);
-        return (i32) result_code;
+        goto error;
     }
 
     // Configure vsync:
     result_code = wlclient_egl_set_swap_interval(1);
     if (result_code != WLCLIENT_ERROR_OK) {
         printf("ERROR - %d\n", result_code);
-        return (i32) result_code;
+        goto error;
     }
 
     i32 framebuffer_width = 0;
@@ -77,11 +77,15 @@ i32 main(void) {
     result_code = wlclient_egl_swap_buffers(&window);
     if (result_code != WLCLIENT_ERROR_OK) {
         printf("ERROR - %d\n", result_code);
-        return (i32) result_code;
+        goto error;
     }
 
     sleep(1);
 
     wlclient_shutdown();
     return 0;
+
+error:
+    wlclient_shutdown();
+    return (i32) result_code;
 }

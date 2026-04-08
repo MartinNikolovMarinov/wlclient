@@ -58,9 +58,11 @@ typedef struct wlclient_window {
 
 typedef struct wlclient_window_data {
     bool used;
-    // Logical window size in surface coordinates.
+    // Logical window geometry size in surface coordinates, including client-side decorations.
     i32 width, height;
-    // Actual pixel size of the render target backing the window.
+    // Logical size of the main content surface, excluding client-side decorations.
+    i32 content_width, content_height;
+    // Actual pixel size of the render target backing the main content surface.
     i32 framebuffer_width, framebuffer_height;
     // Compositor-provided logical size bounds.
     i32 max_width, max_height;
@@ -72,4 +74,10 @@ typedef struct wlclient_window_data {
     struct xdg_surface* xdg_surface;
     // XDG Top level turns the surface into a real window. Adds window behavior.
     struct xdg_toplevel* xdg_toplevel;
+    // Decoration surface is the subsurface for client rendered decorations.
+    struct wl_surface* decoration_surface;
+    // The subsurface object is used to define the relationship between the main surface and the decoration_surface.
+    struct wl_subsurface* decoration_subsurface;
+    // The hight for the decoration in pixels.
+    i32 decoration_height;
 } wlclient_window_data;
