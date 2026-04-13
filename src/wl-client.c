@@ -42,10 +42,14 @@ static struct wl_shm* g_shm = NULL;
 // The preferred pixel format for software rendering.
 static i32 g_preffered_pixel_format = -1;
 
+// TODO: Do I need to support multiple seats and how do I test that?
+static struct wl_seat* g_seat = NULL;
+static struct wl_pointer* g_pointer = NULL;
+static const char* g_seatName = NULL;
+
 #define WLCLIENT_MIN_DECORATION_HEIGHT 20
 #define WLCLIENT_MIN_CONTENT_HEIGHT 10
 #define WLCLIENT_MIN_CONTENT_WIDTH 10
-
 // State for all the open windows.
 static wlclient_window_data g_windows[WLCLIENT_WINDOWS_COUNT] = {0};
 
@@ -90,6 +94,9 @@ static void xdg_toplevel_close(void*, struct xdg_toplevel* toplevel);
 static void xdg_toplevel_configure(void*, struct xdg_toplevel* toplevel, i32 width, i32 height, struct wl_array* states);
 static void xdg_toplevel_configure_bounds(void*, struct xdg_toplevel* toplevel, i32 width, i32 height);
 static void xdg_toplevel_configure_wm_capabilities(void*, struct xdg_toplevel* toplevel, struct wl_array* caps);
+
+static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilities);
+static void seat_name(void *data, struct wl_seat *wl_seat, const char *name);
 
 //======================================================================================================================
 // Public
@@ -149,7 +156,7 @@ void wlclient_toggle_decoration(wlclient_window* window) {
     }
 }
 
-void wlclient_resize_window(wlclient_window* window, i32 width, i32 height) {
+void wlclient_window_set_size(wlclient_window* window, i32 width, i32 height) {
     wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
     bool width_changed = false;
 
@@ -220,6 +227,7 @@ wlclient_error_code wlclient_init(void) {
     if (!g_subcompositor) goto error;
     if (!g_xdgWmBase) goto error;
     if (!g_shm) goto error;
+    if (!g_seat) goto error;
 
     // Do a second roundtrip to receive events emitted by newly bound globals (like wl_shm).
     ret = wl_display_roundtrip(g_display);
@@ -797,8 +805,6 @@ static void apply_pending_window_state(const wlclient_window* window, wlclient_w
 *   version   - maximum supported version of the interface
 */
 static void register_global(void* data, struct wl_registry* wl_registry, u32 name, const char* interface, u32 version) {
-    (void)data;
-
     WLCLIENT_LOG_TRACE("Register global received for interface = %s", interface);
 
     if (strcmp(interface, "wl_compositor") == 0) {
@@ -839,6 +845,19 @@ static void register_global(void* data, struct wl_registry* wl_registry, u32 nam
         };
         i32 ret = wl_shm_add_listener(g_shm, &listener, NULL);
         WLCLIENT_PANIC(ret == 0, "failed to setup shm format listener");
+    }
+    else if (strcmp(interface, "wl_seat") == 0) {
+        WLCLIENT_PANIC(!g_seat, "TODO: This is valid I just don't know what to do with it yet.");
+
+        u32 effective_version = WLCLIENT_MIN((u32) wl_shm_interface.version, version);
+        g_seat = wl_registry_bind(wl_registry, name, &wl_seat_interface, effective_version);
+        if (!g_seat) return;
+
+        static const struct wl_seat_listener listener = {
+            .capabilities = seat_capabilities,
+            .name = seat_name,
+        };
+        wl_seat_add_listener(g_seat, &listener, data);
     }
 }
 
@@ -1091,4 +1110,20 @@ static void xdg_toplevel_configure_wm_capabilities(void* data, struct xdg_toplev
     wl_array_for_each(value, caps) {
         WLCLIENT_LOG_TRACE("  [%" PRIu64 "] = %" PRIu32, i++, *value);
     }
+}
+
+// FIXME: Write comment.
+static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilities) {
+    (void)data;
+    (void)wl_seat;
+
+    WLCLIENT_LOG_TRACE("Seat capabilities: %"PRIu32, capabilities);
+}
+
+// FIXME: Write comment.
+static void seat_name(void *data, struct wl_seat *wl_seat, const char *name) {
+    (void)data;
+    (void)wl_seat;
+
+    WLCLIENT_LOG_TRACE("Seat name: %s", name);
 }
