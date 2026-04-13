@@ -18,8 +18,8 @@ static void sigint_handler(int sig) {
     g_running = 0;
 }
 
-static void handle_close(void) {
-    WLCLIENT_LOG_DEBUG("Received close signal.");
+void handle_close(void) {
+    printf("Received close signal.\n");
     g_running = 0;
 }
 
@@ -39,7 +39,7 @@ i32 main(void) {
     wlclient_decoration_config decor_cfg = wlclient_no_decoration_config;
     decor_cfg.decor_height = 50;
     decor_cfg.edge_border_size = 10;
-    result_code = wlclient_create_window(600, 800, "Testing", &decor_cfg, &window);
+    result_code = wlclient_create_window(100, 200, "Testing", &decor_cfg, &window);
     if (result_code != WLCLIENT_ERROR_OK) {
         printf("ERROR - %d\n", result_code);
         goto error;
@@ -89,6 +89,8 @@ i32 main(void) {
     i32 fb_w = 0, fb_h = 0;
     wlclient_get_framebuffer_size(&window, &fb_w, &fb_h);
     glViewport(0, 0, fb_w, fb_h);
+    // i32 frame_counter = 1;
+    // wlclient_resize_window(&window, frame_counter, frame_counter*2);
 
     // TODO: Add a user-facing resize callback that fires from update_framebuffer_size so glViewport
     // can be set there instead of polling every frame.
@@ -99,6 +101,12 @@ i32 main(void) {
             goto error;
         }
 
+
+        // frame_counter++;
+        // wlclient_resize_window(&window, frame_counter, frame_counter*2);
+
+        wlclient_get_framebuffer_size(&window, &fb_w, &fb_h);
+        glViewport(0, 0, fb_w, fb_h);
         glClear(GL_COLOR_BUFFER_BIT);
 
         result_code = wlclient_egl_swap_buffers(&window);
@@ -106,6 +114,8 @@ i32 main(void) {
             printf("ERROR - %d\n", result_code);
             goto error;
         }
+
+        // sleep(1);
     }
 
     wlclient_shutdown();
