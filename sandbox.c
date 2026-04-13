@@ -92,7 +92,7 @@ i32 main(void) {
         glViewport(0, 0, fb_w, fb_h);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        sleep(1);
+        wlclient_toggle_decoration(&window);
 
         result_code = wlclient_egl_swap_buffers(&window);
         if (result_code != WLCLIENT_ERROR_OK) {

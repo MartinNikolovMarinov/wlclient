@@ -4,6 +4,7 @@
 #include "macro_magic.h"
 #include "types.h"
 #include "wl-client.h"
+#include "wl-util.h"
 
 #include <inttypes.h>
 #include <stdbool.h>
@@ -21,8 +22,8 @@
 
 // TODO: [VALGRIND] Investigate the valgrind report that lists some leakage and access patterns that are suspicious.
 //                  One way to check this is to see whether these problems happen for glfw as well.
-// TODO: [DECORATION] I should allow for the decoration to be disabled. That is a whole redesign on it's own for later.
-// TODO: [DECORATION] The current decoration rendering is double buffered by default. That should be configurable.
+// TODO: [DECORATION] The current decoration rendering is double buffered by default. That should be configurable. Does
+//                    it even need to be double buffered?
 
 // A wl_display object represents a client connection to a Wayland compositor.
 static struct wl_display* g_display = NULL;
@@ -104,6 +105,19 @@ void wlclient_get_framebuffer_size(const wlclient_window* window, i32* width, i3
     wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
     if (width) *width = wdata->framebuffer_pixel_width;
     if (height) *height = wdata->framebuffer_pixel_height;
+}
+
+void wlclient_toggle_decoration(wlclient_window* window) {
+    wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
+    wdata->decoration_hide = !wdata->decoration_hide;
+
+    if (wdata->decoration_hide) {
+        // Attach a null buffer for the surface and commit it to signal to the compositor that the surface should be hidden
+        wlclient_hide_surface(wdata->decoration_surface);
+    }
+    else {
+        render_decoration(window);
+    }
 }
 
 wlclient_error_code wlclient_init(void) {
@@ -254,16 +268,18 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
 
     // Select an unused slot for the new window:
     window->id = -1;
-    for (i32 i = 0; i < WLCLIENT_WINDOWS_COUNT; i++) {
-        if (!g_windows[i].used) {
-            wdata = &g_windows[i];
-            window->id = i;
-            break;
+    {
+        for (i32 i = 0; i < WLCLIENT_WINDOWS_COUNT; i++) {
+            if (!g_windows[i].used) {
+                wdata = &g_windows[i];
+                window->id = i;
+                break;
+            }
         }
-    }
-    if (!wdata) {
-        WLCLIENT_LOG_ERR("No more unused windows. Max allowed windows are %" PRIi32, WLCLIENT_WINDOWS_COUNT);
-        goto error;
+        if (!wdata) {
+            WLCLIENT_LOG_ERR("No more unused windows. Max allowed windows are %" PRIi32, WLCLIENT_WINDOWS_COUNT);
+            goto error;
+        }
     }
 
     // Create Surface
@@ -510,7 +526,8 @@ static void shm_pick_format(void *data, struct wl_shm *wl_shm, u32 format) {
 
     WLCLIENT_LOG_TRACE("Supported pixel format %" PRIu32, format);
 
-    // The spec states that ARGB8888 and XRGB8888 should be supported by all renderers.
+    // The spec states that ARGB8888 and XRGB8888 should be supported by all renderers, so it is safe to just pick
+    // ARGB8888 and never bother with anything else.
     if (format == WL_SHM_FORMAT_ARGB8888) {
         g_preffered_pixel_format = (i32) WL_SHM_FORMAT_ARGB8888;
         WLCLIENT_LOG_DEBUG("Pixel format set to %" PRIu32, format);
@@ -536,6 +553,8 @@ static void release_buffer(void *data, struct wl_buffer *wl_buffer) {
 }
 
 static void render_decoration(const wlclient_window* window) {
+    WLCLIENT_LOG_TRACE("Render decoration called!");
+
     wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
     if (wdata->decoration_logical_height <= 0) {
         WLCLIENT_LOG_WARN(
@@ -552,15 +571,17 @@ static void render_decoration(const wlclient_window* window) {
 
     // Find a ready buffer
     i32 buf_idx = -1;
-    for (i32 i = 0; i < (i32) WLCLIENT_ARRAY_SIZE(wdata->decoration_buffers); i++) {
-        if (wdata->decoration_buffer_ready_states[i]) {
-            buf_idx = i;
-            break;
+    {
+        for (i32 i = 0; i < (i32) WLCLIENT_ARRAY_SIZE(wdata->decoration_buffers); i++) {
+            if (wdata->decoration_buffer_ready_states[i]) {
+                buf_idx = i;
+                break;
+            }
         }
-    }
-    if (buf_idx < 0) {
-        WLCLIENT_LOG_TRACE("No available buffers for decoration rendering..");
-        return; // no buffer available
+        if (buf_idx < 0) {
+            WLCLIENT_LOG_TRACE("No available buffers for decoration rendering..");
+            return; // no buffer available
+        }
     }
 
     WLCLIENT_LOG_TRACE("Buffer Index = %"PRIi32"", buf_idx);
@@ -653,8 +674,8 @@ static void surface_preferred_buffer_scale(void* data, struct wl_surface* surfac
 
 /**
 * Handles the xdg_surface configure handshake. This is a synchronization point where the client applies any pending
-* surface state changes for the configure, then acknowledges the serial before attaching and committing content for that
-* state.
+* surface state changes for the configure and then acknowledges the serial. The ack must come after all state changes
+* have been applied — it signals the compositor that the client is done processing this configure sequence.
 *
 * This happens:
 *   - after the initial surface commit
@@ -682,7 +703,7 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
         // mmap, and pixel data are always recreated since they encode specific dimensions, but that should be a
         // relatively cheap operation.
         //
-        // NOTE: This should be happening even when the decoration is currently hidden to avoid stale cached data!
+        // IMPORTANT: Running this code keeps decoration buffers up to date even while the decoration is hidden.
 
         i32 new_decor_width = wdata->logical_width * wdata->buffer_scale;
         i32 new_decor_height = wdata->decoration_logical_height * wdata->buffer_scale;

@@ -14,7 +14,7 @@ WLCLIENT_API_EXPORT void wlclient_destroy_window(wlclient_window* window);
 WLCLIENT_API_EXPORT void wlclient_get_window_size(const wlclient_window* window, i32* width, i32* height);
 WLCLIENT_API_EXPORT void wlclient_get_framebuffer_size(const wlclient_window* window, i32* width, i32* height);
 
-WLCLIENT_API_EXPORT void wlclient_render_decoration(wlclient_window* window);
+WLCLIENT_API_EXPORT void wlclient_toggle_decoration(wlclient_window* window);
 
 WLCLIENT_API_INTERNAL struct wl_display* wlclient_get_wl_display(void);
 WLCLIENT_API_INTERNAL wlclient_window_data* wlclient_get_wl_window_data(const wlclient_window* window);
