@@ -1112,7 +1112,18 @@ static void xdg_toplevel_configure_wm_capabilities(void* data, struct xdg_toplev
     }
 }
 
-// FIXME: Write comment.
+/**
+* This reports which input device classes are currently exposed by the seat.
+*
+* This happens:
+*   - after binding the wl_seat global
+*   - whenever the seat gains or loses capabilities such as pointer or keyboard
+*
+* Parameters:
+*   data         - user-provided pointer passed to wl_seat_add_listener
+*   wl_seat      - the wl_seat instance
+*   capabilities - bitmask of wl_seat_capability values currently available on the seat
+*/
 static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilities) {
     (void)data;
     (void)wl_seat;
@@ -1120,7 +1131,18 @@ static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilit
     WLCLIENT_LOG_TRACE("Seat capabilities: %"PRIu32, capabilities);
 }
 
-// FIXME: Write comment.
+/**
+* This reports the compositor-provided descriptive name for the seat.
+*
+* This happens:
+*   - after binding the wl_seat global when the compositor advertises a seat name
+*   - whenever the compositor updates the seat name
+*
+* Parameters:
+*   data    - user-provided pointer passed to wl_seat_add_listener
+*   wl_seat - the wl_seat instance
+*   name    - human-readable seat name supplied by the compositor
+*/
 static void seat_name(void *data, struct wl_seat *wl_seat, const char *name) {
     (void)data;
     (void)wl_seat;
