@@ -59,6 +59,7 @@ static void (*wlclient_backend_resize_window)(const wlclient_window* window, i32
 static void destroy_window_data(wlclient_window_data* wdata);
 static void destroy_decoration_resources(wlclient_window_data* wdata);
 static void destroy_decoration_buffers(wlclient_window_data* wdata);
+static void destroy_edge_resources(wlclient_window_data* wdata);
 
 static void resize_decoration(wlclient_window_data* wdata);
 static void resize_decoration_shm_pool(wlclient_window_data* wdata, i32 new_pool_size);
@@ -122,6 +123,12 @@ void wlclient_get_framebuffer_size(const wlclient_window* window, i32* width, i3
     wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
     if (width) *width = wdata->framebuffer_pixel_width;
     if (height) *height = wdata->framebuffer_pixel_height;
+}
+
+void wlclient_set_close_handler(wlclient_window* window, wlclient_close_handler handler) {
+    WLCLIENT_ASSERT(handler);
+    wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
+    wdata->close_handler = handler;
 }
 
 void wlclient_toggle_decoration(wlclient_window* window) {
@@ -280,6 +287,11 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
         decor_height = WLCLIENT_MAX(decor_cfg->decor_height, WLCLIENT_MIN_DECORATION_HEIGHT);
     }
 
+    i32 edge_border_size = 0;
+    if (decor_cfg && decor_cfg->edge_border_size > 0) {
+        edge_border_size = decor_cfg->edge_border_size;
+    }
+
     WLCLIENT_LOG_DEBUG("Creating window -- width=%" PRIi32 ", height=%" PRIi32 ", title=%s", width, height, title);
 
     // Select an unused slot for the new window:
@@ -357,6 +369,44 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
         wl_surface_commit(wdata->decoration_surface);
     }
 
+    // Create invisible edge subsurfaces for interactive resize hit regions.
+    if (edge_border_size > 0) {
+        for (i32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
+            wdata->edge_surfaces[i].surface = wl_compositor_create_surface(g_compositor);
+            if (!wdata->edge_surfaces[i].surface) goto error;
+
+            wdata->edge_surfaces[i].subsurface = wl_subcompositor_get_subsurface(
+                g_subcompositor,
+                wdata->edge_surfaces[i].surface,
+                wdata->surface
+            );
+            if (!wdata->edge_surfaces[i].subsurface) goto error;
+        }
+
+        // Position edges around the content area. Positions are relative to the main surface origin.
+        wl_subsurface_set_position(
+            wdata->edge_surfaces[WLCLIENT_EDGE_TOP].subsurface,
+            -edge_border_size, -decor_height - edge_border_size
+        );
+        wl_subsurface_set_position(
+            wdata->edge_surfaces[WLCLIENT_EDGE_BOTTOM].subsurface,
+            -edge_border_size, height
+        );
+        wl_subsurface_set_position(
+            wdata->edge_surfaces[WLCLIENT_EDGE_LEFT].subsurface,
+            -edge_border_size, -decor_height
+        );
+        wl_subsurface_set_position(
+            wdata->edge_surfaces[WLCLIENT_EDGE_RIGHT].subsurface,
+            width, -decor_height
+        );
+
+        for (i32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
+            wl_surface_commit(wdata->edge_surfaces[i].surface);
+        }
+    }
+
+    wdata->edge_border_size = edge_border_size;
     wdata->logical_width = width;
     wdata->logical_height = height + decor_height;
     wdata->content_logical_width = width;
@@ -410,6 +460,7 @@ static void destroy_window_data(wlclient_window_data* wdata) {
     if (wdata->xdg_surface) xdg_surface_destroy(wdata->xdg_surface);
 
     destroy_decoration_resources(wdata);
+    destroy_edge_resources(wdata);
 
     if (wdata->surface) wl_surface_destroy(wdata->surface);
 
@@ -423,6 +474,13 @@ static void destroy_decoration_resources(wlclient_window_data* wdata) {
     if (wdata->decoration_shm_pool) wl_shm_pool_destroy(wdata->decoration_shm_pool);
     if (wdata->decoration_subsurface) wl_subsurface_destroy(wdata->decoration_subsurface);
     if (wdata->decoration_surface) wl_surface_destroy(wdata->decoration_surface);
+}
+
+static void destroy_edge_resources(wlclient_window_data* wdata) {
+    for (i32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
+        if (wdata->edge_surfaces[i].subsurface) wl_subsurface_destroy(wdata->edge_surfaces[i].subsurface);
+        if (wdata->edge_surfaces[i].surface) wl_surface_destroy(wdata->edge_surfaces[i].surface);
+    }
 }
 
 static void destroy_decoration_buffers(wlclient_window_data* wdata) {
@@ -550,7 +608,7 @@ static void recreate_decoration_buffers(wlclient_window_data* wdata, i32 buf_siz
 }
 
 static void render_decoration(wlclient_window_data* wdata) {
-    WLCLIENT_LOG_TRACE("Render decoration called!");
+    WLCLIENT_LOG_TRACE("Render decoration called...");
 
     if (wdata->decoration_logical_height <= 0) {
         WLCLIENT_LOG_WARN(
@@ -582,7 +640,7 @@ static void render_decoration(wlclient_window_data* wdata) {
 
     WLCLIENT_LOG_TRACE("Buffer Index = %"PRIi32"", buf_idx);
 
-    // TODO: draw actual decoration content
+    // TODO: Draw the actual decoration toolbar here instead of the hardcoded blue rect:
     i32 buf_size = (wdata->decoration_pixel_width * WLCLIENT_BYTES_PER_PIXEL) * wdata->decoration_pixel_height;
     i32 pixel_count = wdata->decoration_pixel_width * wdata->decoration_pixel_height;
     u8* pixels = wdata->decoration_pixel_data + (buf_idx * buf_size);
@@ -598,7 +656,7 @@ static void render_decoration(wlclient_window_data* wdata) {
     wl_surface_damage_buffer(wdata->decoration_surface, 0, 0, wdata->decoration_pixel_width, wdata->decoration_pixel_height);
     wl_surface_commit(wdata->decoration_surface);
 
-    WLCLIENT_LOG_TRACE("Decoration rendered.");
+    WLCLIENT_LOG_TRACE("Render decoration done.");
 }
 
 static void update_framebuffer_size(const wlclient_window* window, wlclient_window_data* wdata) {
@@ -824,16 +882,19 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
     wlclient_window* window = data;
     wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
 
-    if (wdata->decoration_logical_height > 0 && wdata->pending & WLCLIENT_PENDING_DECORATION_RESIZE) {
-        resize_decoration(wdata);
+    if (wdata->pending & WLCLIENT_PENDING_DECORATION_RESIZE) {
+        if (wdata->decoration_logical_height > 0) {
+            resize_decoration(wdata);
 
-        xdg_surface_set_window_geometry(
-            wdata->xdg_surface,
-            0, -wdata->decoration_logical_height,
-            wdata->logical_width, wdata->logical_height
-        );
+            xdg_surface_set_window_geometry(
+                wdata->xdg_surface,
+                0, -wdata->decoration_logical_height,
+                wdata->logical_width, wdata->logical_height
+            );
 
-        render_decoration(wdata);
+            render_decoration(wdata);
+        }
+
     }
 
     if (wdata->pending & WLCLIENT_PENDING_BACKEND_RESIZE) {
@@ -857,10 +918,13 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
 *   toplevel  - the xdg_toplevel instance
 */
 static void xdg_toplevel_close(void* data, struct xdg_toplevel* toplevel) {
-    (void)data;
     (void)toplevel;
 
-    WLCLIENT_LOG_TRACE("Toplevel close");
+    wlclient_window* window = data;
+    wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
+    if (wdata->close_handler) {
+        wdata->close_handler();
+    }
 }
 
 /**

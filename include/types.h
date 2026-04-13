@@ -59,6 +59,8 @@ typedef struct wlclient_window {
 #define WLCLIENT_WINDOWS_COUNT 5
 #define WLCLIENT_BYTES_PER_PIXEL 4
 
+typedef void (*wlclient_close_handler)(void);
+
 typedef enum {
     WLCLIENT_PENDING_NONE              = 0,
     WLCLIENT_PENDING_DECORATION_RESIZE = 1 << 0, // Recreate decoration buffers and update window geometry.
@@ -67,9 +69,21 @@ typedef enum {
 
 typedef struct wlclient_decoration_config {
     i32 decor_height;
+    i32 edge_border_size; // Logical width of the invisible resize edges. 0 means no resize edges.
 } wlclient_decoration_config;
 
-static const struct wlclient_decoration_config wlclient_no_decoration_config = {0};
+static const struct wlclient_decoration_config wlclient_no_decoration_config = {
+    .decor_height = 0,
+    .edge_border_size = 0,
+};
+
+typedef enum {
+    WLCLIENT_EDGE_TOP,
+    WLCLIENT_EDGE_BOTTOM,
+    WLCLIENT_EDGE_LEFT,
+    WLCLIENT_EDGE_RIGHT,
+    WLCLIENT_EDGE_COUNT,
+} wlclient_edge;
 
 typedef struct wlclient_window_data {
     bool used;
@@ -113,4 +127,16 @@ typedef struct wlclient_window_data {
     bool decoration_buffer_ready_states[2];
     // Single mmap of the entire pool.
     u8* decoration_pixel_data;
+
+    // Invisible resize edge subsurfaces. These are transparent surfaces positioned around the window
+    // border to provide hit regions for interactive resize. Independent from the visible title bar decoration.
+    struct {
+        struct wl_surface* surface;
+        struct wl_subsurface* subsurface;
+    } edge_surfaces[WLCLIENT_EDGE_COUNT];
+    // Logical border width for all edges. Immutable after window creation. 0 means no edges.
+    i32 edge_border_size;
+
+    // Handlers
+    wlclient_close_handler close_handler;
 } wlclient_window_data;
