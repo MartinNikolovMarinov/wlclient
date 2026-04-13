@@ -4,6 +4,7 @@
 
 #include <signal.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #include "debug.h"
 #include "types.h"
@@ -80,10 +81,18 @@ i32 main(void) {
     // TODO: Add a user-facing resize callback that fires from update_framebuffer_size so glViewport
     // can be set there instead of polling every frame.
     while (g_running) {
+        result_code = wlclient_poll_events();
+        if (result_code != WLCLIENT_ERROR_OK) {
+            printf("ERROR - %d\n", result_code);
+            goto error;
+        }
+
         i32 fb_w = 0, fb_h = 0;
         wlclient_get_framebuffer_size(&window, &fb_w, &fb_h);
         glViewport(0, 0, fb_w, fb_h);
         glClear(GL_COLOR_BUFFER_BIT);
+
+        sleep(1);
 
         result_code = wlclient_egl_swap_buffers(&window);
         if (result_code != WLCLIENT_ERROR_OK) {

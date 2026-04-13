@@ -41,6 +41,7 @@ typedef enum wlclient_error_code {
     WLCLIENT_ERROR_OK,
 
     WLCLIENT_ERROR_INIT_FAILED,
+    WLCLIENT_ERROR_EVENT_DISPATCH_FAILED,
     WLCLIENT_ERROR_WINDOW_CREATE_FAILED,
     WLCLIENT_ERROR_EGL_INIT_FAILED,
     WLCLIENT_ERROR_EGL_WINDOW_CREATE_FAILED,
@@ -92,6 +93,8 @@ typedef struct wlclient_window_data {
     // XDG toplevel role — makes the surface a desktop window with title, close, resize, etc.
     struct xdg_toplevel* xdg_toplevel;
 
+    // Should the decoration be visible.
+    bool decoration_hide;
     // Decoration subsurface, positioned above the main surface to render the title bar.
     struct wl_surface* decoration_surface;
     // Binds decoration_surface as a child of the main surface.

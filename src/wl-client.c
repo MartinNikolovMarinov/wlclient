@@ -9,6 +9,8 @@
 #include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
+#include <poll.h>
 
 #include <sys/mman.h>
 
@@ -60,7 +62,6 @@ static void shm_pick_format(void *data, struct wl_shm *wl_shm, u32 format);
 static void release_buffer(void *data, struct wl_buffer *wl_buffer);
 
 static void render_decoration(const wlclient_window* window);
-static void decoration_surface_done(void *data, struct wl_callback *wl_callback, u32 last_frame_time);
 
 static void xdg_wm_base_ping(void* data, struct xdg_wm_base* xdg_wm_base, u32 serial);
 static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u32 serial);
@@ -188,6 +189,54 @@ void wlclient_shutdown(void) {
     WLCLIENT_LOG_DEBUG("Shutdown");
 }
 
+wlclient_error_code wlclient_poll_events(void) {
+    WLCLIENT_ASSERT(g_display);
+
+    // Send all pending requests to the compositor first, otherwise the client might deadlock waiting on an event that
+    // was never sent.
+    {
+        i32 ret = wl_display_flush(g_display);
+        if (ret < 0 && errno != EAGAIN) goto error;
+    }
+
+    // Drain any events already queued in the client-side event queue before attempting to read more from the socket.
+    // prepare_read fails while the queue is non-empty, so this loop is required.
+    while (wl_display_prepare_read(g_display) != 0) {
+        if (wl_display_dispatch_pending(g_display) < 0) goto error;
+    }
+
+    // Non-blocking poll for new data on the Wayland socket.
+    struct pollfd pfd = {
+        .fd = wl_display_get_fd(g_display),
+        .events = POLLIN,
+        .revents = 0,
+    };
+    i32 poll_ret = poll(&pfd, 1, 0);
+    if (poll_ret < 0) {
+        wl_display_cancel_read(g_display);
+        goto error;
+    }
+
+    if (poll_ret > 0) {
+        // Data available — read events from the socket into the queue.
+        if (wl_display_read_events(g_display) < 0) goto error;
+    }
+    else {
+        // No data — release the read lock without reading.
+        wl_display_cancel_read(g_display);
+    }
+
+    // Dispatch events that were just read from the socket. read_events only deserializes wire data into
+    // the queue without invoking callbacks — this second dispatch is what actually fires the listeners.
+    if (wl_display_dispatch_pending(g_display) < 0) goto error;
+
+    return WLCLIENT_ERROR_OK;
+
+error:
+    WLCLIENT_LOG_ERR("Wayland event dispatch failed");
+    return WLCLIENT_ERROR_EVENT_DISPATCH_FAILED;
+}
+
 wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* title, const wlclient_decoration_config* decor_cfg, wlclient_window* window) {
     i32 ret;
     wlclient_window_data* wdata = NULL;
@@ -283,6 +332,7 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
     wdata->buffer_scale = 1;
     wdata->framebuffer_pixel_width = width;
     wdata->framebuffer_pixel_height = height;
+    wdata->decoration_hide = !(decor_height > 0);
     wdata->decoration_logical_height = decor_height;
     wdata->decoration_pixel_height = decor_height;
     wdata->decoration_anon_file_fd = -1; // mark the inital decoration anon file to something strictly invalid.
@@ -295,19 +345,6 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
     wl_surface_commit(wdata->surface);
     ret = wl_display_roundtrip(g_display);
     if (ret < 0) goto error;
-
-    // Kick off the decoration frame loop. Buffers now exist after the configure roundtrip.
-    if (decor_height > 0) {
-        // Request next frame:
-        struct wl_callback* cb = wl_surface_frame(wdata->decoration_surface);
-        static const struct wl_callback_listener listener = {
-            .done = decoration_surface_done,
-        };
-        wl_callback_add_listener(cb, &listener, window);
-
-        // Render;
-        render_decoration(window);
-    }
 
     WLCLIENT_LOG_DEBUG("Created successfully");
     return WLCLIENT_ERROR_OK;
@@ -501,10 +538,15 @@ static void release_buffer(void *data, struct wl_buffer *wl_buffer) {
 static void render_decoration(const wlclient_window* window) {
     wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
     if (wdata->decoration_logical_height <= 0) {
-        WLCLIENT_LOG_TRACE(
+        WLCLIENT_LOG_WARN(
             "Decoration logical height is %"PRIi32"; which means \"do not rebder decoration\"",
             wdata->decoration_logical_height
         );
+        return;
+    }
+
+    if (wdata->decoration_hide) {
+        WLCLIENT_LOG_TRACE("Decoration hidden; will not render");
         return;
     }
 
@@ -516,7 +558,10 @@ static void render_decoration(const wlclient_window* window) {
             break;
         }
     }
-    if (buf_idx < 0) return; // no buffer available
+    if (buf_idx < 0) {
+        WLCLIENT_LOG_TRACE("No available buffers for decoration rendering..");
+        return; // no buffer available
+    }
 
     WLCLIENT_LOG_TRACE("Buffer Index = %"PRIi32"", buf_idx);
 
@@ -537,39 +582,8 @@ static void render_decoration(const wlclient_window* window) {
     wl_surface_attach(wdata->decoration_surface, wdata->decoration_buffers[buf_idx], 0, 0);
     wl_surface_damage_buffer(wdata->decoration_surface, 0, 0, wdata->decoration_pixel_width, wdata->decoration_pixel_height);
     wl_surface_commit(wdata->decoration_surface);
-}
 
-/**
-* Frame callback for the decoration subsurface. The compositor calls this when it is ready for the client to render
-* and commit the next decoration frame. This drives the decoration's render loop.
-*
-* This happens:
-*   - once per compositor refresh cycle, after the previous decoration frame has been presented
-*
-* Parameters:
-*   data            - user-provided wlclient_window pointer passed to wl_callback_add_listener
-*   wl_callback     - the wl_callback instance for the completed frame
-*   last_frame_time - compositor timestamp in milliseconds of the last frame presentation
-*/
-static void decoration_surface_done(void *data, struct wl_callback *wl_callback, u32 last_frame_time) {
-    (void) last_frame_time;
-
-    WLCLIENT_LOG_TRACE("Decoration surface done");
-
-	wlclient_window* window = data;
-    wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
-
-    wl_callback_destroy(wl_callback);
-
-    // Request the next frame before rendering — wlclient_render_decoration commits the surface,
-    // and the commit is what delivers the frame request to the compositor.
-    struct wl_callback* cb = wl_surface_frame(wdata->decoration_surface);
-    static const struct wl_callback_listener listener = {
-        .done = decoration_surface_done,
-    };
-    wl_callback_add_listener(cb, &listener, window);
-
-    render_decoration(window);
+    WLCLIENT_LOG_TRACE("Decoration rendered.");
 }
 
 /**
@@ -667,6 +681,8 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
         // On resize, the pool and fd are only recreated if the new size exceeds the current allocation. The wl_buffers,
         // mmap, and pixel data are always recreated since they encode specific dimensions, but that should be a
         // relatively cheap operation.
+        //
+        // NOTE: This should be happening even when the decoration is currently hidden to avoid stale cached data!
 
         i32 new_decor_width = wdata->logical_width * wdata->buffer_scale;
         i32 new_decor_height = wdata->decoration_logical_height * wdata->buffer_scale;
@@ -753,6 +769,8 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
             0, -wdata->decoration_logical_height,
             wdata->logical_width, wdata->logical_height
         );
+
+        render_decoration(window);
     }
 
     if (wdata->pending & WLCLIENT_PENDING_BACKEND_RESIZE) {
