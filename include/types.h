@@ -37,6 +37,10 @@ typedef u32             rune; /* Runes represent a single UTF-32 encoded charact
 #define WLCLIENT_MINUTE       (UINT64_C(60)   * WLCLIENT_SECOND)        /*    60_000_000_000ns */
 #define WLCLIENT_HOUR         (UINT64_C(60)   * WLCLIENT_MINUTE)        /* 3_600_000_000_000ns */
 
+#define WLCLIENT_WINDOWS_COUNT 5
+#define WLCLIENT_BYTES_PER_PIXEL 4
+#define WLCLIENT_FRAME_BUFFERS_COUNT 2
+
 typedef enum wlclient_error_code {
     WLCLIENT_ERROR_OK,
 
@@ -55,9 +59,6 @@ typedef enum wlclient_error_code {
 typedef struct wlclient_window {
     i32 id;
 } wlclient_window;
-
-#define WLCLIENT_WINDOWS_COUNT 5
-#define WLCLIENT_BYTES_PER_PIXEL 4
 
 typedef void (*wlclient_close_handler)(void);
 
@@ -86,22 +87,22 @@ typedef enum {
 } wlclient_edge;
 
 typedef struct wlclient_surface_node {
-    // The surface is a child of the main surface:
+    // The child surface attached the main window surface.
     struct wl_surface* child_surface;
-    // The subsurface binds the above surface as a child of the main surface.
+    // Subsurface relationship linking child_surface to the main window surface.
     struct wl_subsurface* subsurface;
     // Decoration dimensions in pixels (logical size * buffer_scale).
     i32 pixel_width;
     i32 pixel_height;
-    // The shared memory buffers pool.
+    // Shared-memory pool backing all buffers for this surface node.
     struct wl_shm_pool* shm_pool;
-    // wl_buffer handle from the pool.
-    struct wl_buffer* buffer;
-    // The ready state indicates when the compositor has released the buffer.
-    bool ready_state;
-    // Anonymous file backing the shm pool.
+    // Buffers attached to child_surface.
+    struct wl_buffer* buffers[WLCLIENT_FRAME_BUFFERS_COUNT];
+    // Indicates when the corresponding buffer has been released by the compositor and may be reused.
+    bool ready_states[WLCLIENT_FRAME_BUFFERS_COUNT];
+    // Anonymous file descriptor backing shm_pool.
     i32 anon_file_fd;
-    // The mmaped pixel bytes.
+    // A flat pixel storage for all buffers in shm_pool. Memory mapped from the anonymous file.
     u8* pixel_data;
 } wlclient_surface_node;
 

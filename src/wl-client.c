@@ -8,6 +8,7 @@
 
 #include <inttypes.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
@@ -26,7 +27,6 @@
 // TODO: [FRACTIONAL_SCALING] Add wp_fractional_scale_v1 + wp_viewporter support and compute framebuffer size from the
 //                            compositor's fractional preferred scale. The current wl_surface preferred_buffer_scale
 //                            path is only the integer fallback.
-// TODO: [DOUBLE_BUFFERING] Should decoration rendering be double-buffered? Is there terring on fast resizes?
 
 #define WLCLIENT_DEBUG_RENDER_EDGES true
 
@@ -97,6 +97,7 @@ static void destroy_input_device(wlclient_input_device* input_device);
 static void surface_node_change_pool_size(wlclient_surface_node* surface_node, i32 new_pool_size);
 static void surface_node_create_buffer(wlclient_surface_node* surface_node, i32 buf_size);
 
+static i32 effective_decoration_height(const wlclient_window_data* wdata);
 static void clamp_logical_width_height_minimums(i32 decoration_logical_height, i32* width, i32* height);
 static void clamp_logical_width_height_known_bounds(i32 max_logical_width, i32 max_logical_height, i32* width, i32* height);
 
@@ -120,7 +121,11 @@ static i32 find_input_device_index_by_id(u32 id);
 static void register_global(void* data, struct wl_registry* wl_registry, u32 id, const char* interface, u32 version);
 static void register_global_remove(void* data, struct wl_registry* wl_registry, u32 id);
 static void surface_preferred_buffer_scale(void* data, struct wl_surface* surface, i32 factor);
+static void surface_enter(void *data, struct wl_surface *wl_surface, struct wl_output *output);
+static void surface_leave(void *data, struct wl_surface *wl_surface, struct wl_output *output);
+static void surface_preferred_buffer_transform(void *data, struct wl_surface *wl_surface, u32 transform);
 static void shm_pick_format(void *data, struct wl_shm *wl_shm, u32 format);
+
 static void release_buffer(void *data, struct wl_buffer *wl_buffer);
 
 static void xdg_wm_base_ping(void* data, struct xdg_wm_base* xdg_wm_base, u32 serial);
@@ -200,6 +205,9 @@ void wlclient_set_close_handler(wlclient_window* window, wlclient_close_handler 
 
 void wlclient_toggle_decoration(wlclient_window* window) {
     wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
+
+    if (wdata->decoration_logical_height <= 0) return; // decoration is off
+
     wdata->decoration_hide = !wdata->decoration_hide;
 
     if (wdata->decoration_hide) {
@@ -212,6 +220,10 @@ void wlclient_toggle_decoration(wlclient_window* window) {
     else {
         render_decoration(wdata);
     }
+
+    wdata->content_logical_height = wdata->logical_height - effective_decoration_height(wdata);
+    wdata->pending |= WLCLIENT_PENDING_BACKEND_RESIZE;
+    apply_pending_window_state(window, wdata);
 }
 
 void wlclient_window_set_size(wlclient_window* window, i32 width, i32 height) {
@@ -223,7 +235,9 @@ void wlclient_window_set_size(wlclient_window* window, i32 width, i32 height) {
     WLCLIENT_ASSERT(width > 0);
     WLCLIENT_ASSERT(height > 0);
 
-    clamp_logical_width_height_minimums(wdata->decoration_logical_height, &width, &height);
+    i32 effective_decor_height = effective_decoration_height(wdata);
+
+    clamp_logical_width_height_minimums(effective_decor_height, &width, &height);
     clamp_logical_width_height_known_bounds(wdata->max_logical_width, wdata->max_logical_height, &width, &height);
 
     if (width == wdata->logical_width && height == wdata->logical_height) {
@@ -232,14 +246,14 @@ void wlclient_window_set_size(wlclient_window* window, i32 width, i32 height) {
     }
 
     width_changed = width != wdata->logical_width;
-    if (width_changed) {
+    if (width_changed && effective_decor_height > 0) {
         wdata->pending |= WLCLIENT_PENDING_DECORATION_RESIZE;
     }
 
     wdata->logical_width = width;
     wdata->logical_height = height;
     wdata->content_logical_width = wdata->logical_width;
-    wdata->content_logical_height = wdata->logical_height - wdata->decoration_logical_height;
+    wdata->content_logical_height = wdata->logical_height - effective_decor_height;
     wdata->pending |= WLCLIENT_PENDING_BACKEND_RESIZE;
 
     WLCLIENT_LOG_DEBUG(
@@ -247,7 +261,7 @@ void wlclient_window_set_size(wlclient_window* window, i32 width, i32 height) {
         "\n  decoration_logicl_height: %" PRIi32 "",
         wdata->logical_width, wdata->logical_height,
         wdata->content_logical_width, wdata->content_logical_height,
-        wdata->decoration_logical_height
+        effective_decor_height
     );
 
     apply_pending_window_state(window, wdata);
@@ -266,7 +280,6 @@ wlclient_error_code wlclient_init(void) {
         g_registry = wl_display_get_registry(g_display);
         if (!g_registry) goto error;
 
-        // The registry listener is a callback table for the global object registry.
         const static struct wl_registry_listener registry_listener = {
             .global = register_global,
             .global_remove = register_global_remove,
@@ -281,26 +294,29 @@ wlclient_error_code wlclient_init(void) {
         WLCLIENT_LOG_DEBUG("Registry initialized");
     }
 
+    // Verify all necessary globals are registered.
     if (!g_compositor) goto error;
     if (!g_subcompositor) goto error;
     if (!g_xdgWmBase) goto error;
     if (!g_shm) goto error;
 
-    // Do a second roundtrip to receive events emitted by newly bound globals (like wl_shm).
+    // Do a second roundtrip to receive events emitted by newly bound globals (like wl_shm preferred pixel format).
     ret = wl_display_roundtrip(g_display);
     if (ret < 0) goto error;
 
     if (g_preffered_pixel_format < 0) goto error;
 
     // Verify device inputs are configured correctly:
-    if (g_input_devices_count <= 0) goto error;
-    for (i32 i = 0; i < g_input_devices_count; i++) {
-        wlclient_input_device* d = &g_input_devices[i];
-        if (!d->used) goto error;
-        if (!d->seat) goto error;
-        if (!d->seat_id) goto error;
-        if (!d->pointer) goto error;
-        if (!d->keyboard) goto error;
+    {
+        if (g_input_devices_count <= 0) goto error;
+        for (i32 i = 0; i < g_input_devices_count; i++) {
+            wlclient_input_device* d = &g_input_devices[i];
+            if (!d->used) goto error;
+            if (!d->seat) goto error;
+            if (!d->seat_id) goto error;
+            if (!d->pointer) goto error;
+            if (!d->keyboard) goto error;
+        }
     }
 
     WLCLIENT_LOG_DEBUG("Initialization done");
@@ -435,7 +451,7 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
         }
     }
 
-    // Mark the initial decoration anonymous file as strictly invalid.
+    // Mark the initial decoration anonymous files as strictly invalid.
     // Need to do this early in case of an error and abrupt shutdown.
     wdata->decoration_node.anon_file_fd = -1;
     for (i32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
@@ -448,10 +464,10 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
         if (!wdata->surface) goto error;
 
         const static struct wl_surface_listener surface_listener = {
-            .enter = NULL, // TODO: The NULL listeners will crash if those events are ever triggered.
-            .leave = NULL,
+            .enter = surface_enter,
+            .leave = surface_leave,
             .preferred_buffer_scale = surface_preferred_buffer_scale,
-            .preferred_buffer_transform = NULL,
+            .preferred_buffer_transform = surface_preferred_buffer_transform,
         };
         ret = wl_surface_add_listener(wdata->surface, &surface_listener, window);
         if (ret != 0) goto error;
@@ -496,9 +512,6 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
 
         // Position the decoration directly above the main content surface.
         wl_subsurface_set_position(wdata->decoration_node.subsurface, 0, -decor_height);
-
-        // Commit the decoration surface:
-        wl_surface_commit(wdata->decoration_node.child_surface);
     }
 
     // Create invisible edge subsurfaces for interactive resize hit regions.
@@ -514,9 +527,13 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
             );
             if (!wdata->edge_nodes[i].subsurface) goto error;
         }
+
+
+        // Position edges before the first parent commit so the cached subsurface state is applied synchronously.
+        wdata->edge_border_size = edge_border_size; // required for positioning the edges.
+        position_edges(wdata);
     }
 
-    wdata->edge_border_size = edge_border_size;
     wdata->logical_width = width;
     wdata->logical_height = height;
     wdata->content_logical_width = width;
@@ -528,13 +545,8 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
     wdata->decoration_logical_height = decor_height;
     wdata->decoration_node.pixel_height = decor_height;
     wdata->decoration_node.pixel_width = width;
-    wdata->used = true; // This needs to set before the round trip.
+    wdata->used = true; // This needs to be set before the round trip.
     wdata->pending = WLCLIENT_PENDING_DECORATION_RESIZE | WLCLIENT_PENDING_BACKEND_RESIZE;
-
-    // Position edges before the first parent commit so the cached subsurface state is applied synchronously.
-    if (wdata->edge_border_size > 0) {
-        position_edges(wdata);
-    }
 
     // Commit the main surface and roundtrip to synchronize the new window creation.
     wl_surface_commit(wdata->surface);
@@ -599,9 +611,13 @@ static void destroy_surface_node_buffer(wlclient_surface_node* surface_node) {
         const usize stride = (usize) (surface_node->pixel_width * WLCLIENT_BYTES_PER_PIXEL);
         usize map_size = stride * (usize) surface_node->pixel_height;
         munmap(surface_node->pixel_data, map_size);
+        surface_node->pixel_data = NULL;
     }
 
-    if (surface_node->buffer) wl_buffer_destroy(surface_node->buffer);
+    for (i32 i = 0; i < WLCLIENT_FRAME_BUFFERS_COUNT; i++) {
+        if (surface_node->buffers[i]) wl_buffer_destroy(surface_node->buffers[i]);
+        surface_node->buffers[i] = NULL;
+    }
 }
 
 static void destroy_all_input_devices(void) {
@@ -618,12 +634,17 @@ static void destroy_all_input_devices(void) {
 }
 
 static void destroy_input_device(wlclient_input_device* input_device) {
-    if (input_device->pointer)  wl_pointer_release(input_device->pointer);
-    if (input_device->keyboard) wl_keyboard_release(input_device->keyboard);
-    if (input_device->seat)     wl_seat_destroy(input_device->seat);
+    if (input_device->pointer)   wl_pointer_release(input_device->pointer);
+    if (input_device->keyboard)  wl_keyboard_release(input_device->keyboard);
+    if (input_device->seat_name) free(input_device->seat_name);
+    if (input_device->seat)      wl_seat_destroy(input_device->seat);
 
     // Marks the pointer as unused along with zeroing out everything else:
     memset(input_device, 0, sizeof(*input_device));
+}
+
+static i32 effective_decoration_height(const wlclient_window_data* wdata) {
+    return wdata->decoration_hide ? 0 : wdata->decoration_logical_height;
 }
 
 static void clamp_logical_width_height_minimums(i32 decoration_logical_height, i32* width, i32* height) {
@@ -663,11 +684,12 @@ static void clamp_logical_width_height_known_bounds(i32 max_logical_width, i32 m
 * operation.
 */
 static void resize_decoration(wlclient_window_data* wdata) {
+    const i32 buf_count = WLCLIENT_FRAME_BUFFERS_COUNT;
     i32 new_decor_width = wdata->logical_width * wdata->buffer_scale;
     i32 new_decor_height = wdata->decoration_logical_height * wdata->buffer_scale;
     const i32 stride = (new_decor_width * WLCLIENT_BYTES_PER_PIXEL);
     i32 decor_buf_size = stride * new_decor_height;
-    i32 decor_pool_size = decor_buf_size;
+    i32 decor_pool_size = decor_buf_size * buf_count;
 
     surface_node_change_pool_size(&wdata->decoration_node, decor_pool_size);
 
@@ -694,8 +716,9 @@ static void resize_decoration(wlclient_window_data* wdata) {
 static void surface_node_change_pool_size(wlclient_surface_node* surface_node, i32 new_pool_size) {
     WLCLIENT_ASSERT(surface_node);
 
+    const i32 buffers_count = WLCLIENT_FRAME_BUFFERS_COUNT;
     const i32 stride = (surface_node->pixel_width * WLCLIENT_BYTES_PER_PIXEL);
-    i32 old_pool_size = stride * surface_node->pixel_height;
+    i32 old_pool_size = stride * surface_node->pixel_height * buffers_count;
     bool should_recreate = surface_node->anon_file_fd < 0 || old_pool_size < new_pool_size;
     if (!should_recreate) {
         // existing anonymous file is large enough.
@@ -703,7 +726,7 @@ static void surface_node_change_pool_size(wlclient_surface_node* surface_node, i
     }
 
     // Close the old anonymous file:
-    if (surface_node->anon_file_fd > 0) {
+    if (surface_node->anon_file_fd >= 0) {
         close(surface_node->anon_file_fd);
         surface_node->anon_file_fd = -1;
     }
@@ -715,7 +738,7 @@ static void surface_node_change_pool_size(wlclient_surface_node* surface_node, i
 
     // Create a new anonymous file for the shared pixel buffer:
     surface_node->anon_file_fd = memfd_create("surface-node-fd", 0);
-    WLCLIENT_PANIC(surface_node->anon_file_fd > 0, "Failed to create temporary anonymous file");
+    WLCLIENT_PANIC(surface_node->anon_file_fd >= 0, "Failed to create temporary anonymous file");
 
     i32 ret = ftruncate(surface_node->anon_file_fd, new_pool_size);
     WLCLIENT_PANIC(ret == 0, "Failed to truncate temporary anonymous file");
@@ -725,31 +748,37 @@ static void surface_node_change_pool_size(wlclient_surface_node* surface_node, i
 }
 
 static void surface_node_create_buffer(wlclient_surface_node* surface_node, i32 buf_size) {
+    const i32 buf_count = WLCLIENT_FRAME_BUFFERS_COUNT;
+    usize pool_size = (usize)(buf_size) * (usize)(buf_count);
     surface_node->pixel_data = mmap(
         NULL,
-        (usize) buf_size,
+        pool_size,
         PROT_READ | PROT_WRITE, MAP_SHARED,
         surface_node->anon_file_fd,
         0
     );
     WLCLIENT_PANIC(surface_node->pixel_data != MAP_FAILED, "Failed mmap decoration pixel data");
-    memset(surface_node->pixel_data, 0, (usize) buf_size);
+    memset(surface_node->pixel_data, 0, pool_size);
 
-    surface_node->buffer = wl_shm_pool_create_buffer(
-        surface_node->shm_pool, 0,
-        surface_node->pixel_width, surface_node->pixel_height,
-        surface_node->pixel_width * WLCLIENT_BYTES_PER_PIXEL,
-        (u32) g_preffered_pixel_format
-    );
-    WLCLIENT_PANIC(surface_node->buffer, "Failed to create decoration buffer from pool");
+    for (i32 i = 0; i < buf_count; i++) {
+        i32 offset = i * buf_size;
 
-    static struct wl_buffer_listener listener = {
-        .release = release_buffer,
-    };
-    i32 ret = wl_buffer_add_listener(surface_node->buffer, &listener, &surface_node->ready_state);
-    WLCLIENT_PANIC(ret == 0, "Failed to set release buffer listener");
+        surface_node->buffers[i] = wl_shm_pool_create_buffer(
+            surface_node->shm_pool, offset,
+            surface_node->pixel_width, surface_node->pixel_height,
+            surface_node->pixel_width * WLCLIENT_BYTES_PER_PIXEL,
+            (u32) g_preffered_pixel_format
+        );
+        WLCLIENT_PANIC(surface_node->buffers[i], "Failed to create decoration buffer from pool");
 
-    surface_node->ready_state = true;
+        static struct wl_buffer_listener listener = {
+            .release = release_buffer,
+        };
+        i32 ret = wl_buffer_add_listener(surface_node->buffers[i], &listener, &surface_node->ready_states[i]);
+        WLCLIENT_PANIC(ret == 0, "Failed to set release buffer listener");
+
+        surface_node->ready_states[i] = true;
+    }
 }
 
 static void render_decoration(wlclient_window_data* wdata) {
@@ -762,23 +791,42 @@ static void render_decoration(wlclient_window_data* wdata) {
     }
 
     // Find a ready buffer
-    if (!wdata->decoration_node.ready_state) {
+    i32 buf_idx = -1;
+    {
+        for (i32 i = 0; i < WLCLIENT_FRAME_BUFFERS_COUNT; i++) {
+            if (wdata->decoration_node.ready_states[i]) {
+                buf_idx = i;
+                break;
+            }
+        }
+    }
+    if (buf_idx < 0) {
         WLCLIENT_LOG_DEBUG("No available buffer for decoration rendering...");
+        WLCLIENT_ASSERT(false, "TODO: Can I assume this?");
         return;
     }
 
-    // TODO: Draw the actual decoration toolbar here instead of the hardcoded rect:
-    i32 pixel_count = wdata->decoration_node.pixel_width * wdata->decoration_node.pixel_height;
-    u8* pixels = wdata->decoration_node.pixel_data;
-    for (i32 p = 0; p < pixel_count; p++) {
-        pixels[p * WLCLIENT_BYTES_PER_PIXEL + 0] = 0xFF; // B
-        pixels[p * WLCLIENT_BYTES_PER_PIXEL + 1] = 0xF0; // G
-        pixels[p * WLCLIENT_BYTES_PER_PIXEL + 2] = 0x0F; // R
-        pixels[p * WLCLIENT_BYTES_PER_PIXEL + 3] = 0xFF; // A
+    WLCLIENT_LOG_DEBUG("Using buffer at index %"PRIi32, buf_idx);
+
+    // TODO: Draw the actual decoration toolbar here instead of the random color:
+    {
+        const i32 stride = wdata->decoration_node.pixel_width * WLCLIENT_BYTES_PER_PIXEL;
+        i32 offset = buf_idx * stride * wdata->decoration_node.pixel_height;
+        i32 pixel_count = wdata->decoration_node.pixel_width * wdata->decoration_node.pixel_height;
+        u8* pixels = wdata->decoration_node.pixel_data + offset;
+        u8 b = (u8) (rand() & 255);
+        u8 g = (u8) (rand() & 255);
+        u8 r = (u8) (rand() & 255);
+        for (i32 p = 0; p < pixel_count; p++) {
+            pixels[p * WLCLIENT_BYTES_PER_PIXEL + 0] = b;
+            pixels[p * WLCLIENT_BYTES_PER_PIXEL + 1] = g;
+            pixels[p * WLCLIENT_BYTES_PER_PIXEL + 2] = r;
+            pixels[p * WLCLIENT_BYTES_PER_PIXEL + 3] = 255;
+        }
     }
 
-    wdata->decoration_node.ready_state = false;
-    wl_surface_attach(wdata->decoration_node.child_surface, wdata->decoration_node.buffer, 0, 0);
+    wdata->decoration_node.ready_states[buf_idx] = false;
+    wl_surface_attach(wdata->decoration_node.child_surface, wdata->decoration_node.buffers[buf_idx], 0, 0);
     wl_surface_damage_buffer(wdata->decoration_node.child_surface, 0, 0, wdata->decoration_node.pixel_width, wdata->decoration_node.pixel_height);
     wl_surface_commit(wdata->decoration_node.child_surface);
 
@@ -801,7 +849,7 @@ static void position_edges(wlclient_window_data* wdata) {
     WLCLIENT_ASSERT(wdata->edge_border_size > 0);
 
     i32 border = wdata->edge_border_size;
-    i32 decor = wdata->decoration_logical_height;
+    i32 decor = effective_decoration_height(wdata);
     i32 content_bottom = wdata->content_logical_height;
     i32 content_right = wdata->logical_width;
 
@@ -830,108 +878,107 @@ static void position_edges(wlclient_window_data* wdata) {
 static void debug_render_edge_overlays(wlclient_window_data* wdata) {
     (void)wdata;
 
-    // FIXME: This code is absolute nonsense. Some of it is not debug at all an in fact is needed.
-
 #if defined(WLCLIENT_DEBUG_RENDER_EDGES) && WLCLIENT_DEBUG_RENDER_EDGES
-    WLCLIENT_ASSERT(wdata->edge_border_size > 0);
+    // FIXME: This code is absolute nonsense. Some of it is not debug at all an in fact is needed.
+    // WLCLIENT_ASSERT(wdata->edge_border_size > 0);
 
-    i32 border = wdata->edge_border_size;
-    i32 total_height = wdata->logical_height;
-    i32 total_width = wdata->logical_width + 2 * border;
+    // i32 border = wdata->edge_border_size;
+    // i32 total_height = wdata->logical_height;
+    // i32 total_width = wdata->logical_width + 2 * border;
 
-    const struct {
-        i32 logical_width;
-        i32 logical_height;
-        u8 b, g, r, a;
-    } specs[WLCLIENT_EDGE_COUNT] = {
-        [WLCLIENT_EDGE_TOP] = { total_width, border, 0x00, 0x00, 0xFF, 0xD0 },
-        [WLCLIENT_EDGE_BOTTOM] = { total_width, border, 0x00, 0xFF, 0x00, 0xD0 },
-        [WLCLIENT_EDGE_LEFT] = { border, total_height, 0xFF, 0x00, 0x00, 0xD0 },
-        [WLCLIENT_EDGE_RIGHT] = { border, total_height, 0x00, 0xFF, 0xFF, 0xD0 },
-    };
+    // const struct {
+    //     i32 logical_width;
+    //     i32 logical_height;
+    //     u8 b, g, r, a;
+    // } specs[WLCLIENT_EDGE_COUNT] = {
+    //     [WLCLIENT_EDGE_TOP] = { total_width, border, 0x00, 0x00, 0xFF, 0xD0 },
+    //     [WLCLIENT_EDGE_BOTTOM] = { total_width, border, 0x00, 0xFF, 0x00, 0xD0 },
+    //     [WLCLIENT_EDGE_LEFT] = { border, total_height, 0xFF, 0x00, 0x00, 0xD0 },
+    //     [WLCLIENT_EDGE_RIGHT] = { border, total_height, 0x00, 0xFF, 0xFF, 0xD0 },
+    // };
 
-    for (i32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
-        i32 pixel_width = specs[i].logical_width * wdata->buffer_scale;
-        i32 pixel_height = specs[i].logical_height * wdata->buffer_scale;
-        usize map_size = (usize) pixel_width * (usize) WLCLIENT_BYTES_PER_PIXEL * (usize) pixel_height;
-        wlclient_surface_node* edge = &wdata->edge_nodes[i];
+    // for (i32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
+    //     i32 pixel_width = specs[i].logical_width * wdata->buffer_scale;
+    //     i32 pixel_height = specs[i].logical_height * wdata->buffer_scale;
+    //     usize map_size = (usize) pixel_width * (usize) WLCLIENT_BYTES_PER_PIXEL * (usize) pixel_height;
+    //     wlclient_surface_node* edge = &wdata->edge_nodes[i];
 
-        WLCLIENT_ASSERT(pixel_width > 0);
-        WLCLIENT_ASSERT(pixel_height > 0);
+    //     WLCLIENT_ASSERT(pixel_width > 0);
+    //     WLCLIENT_ASSERT(pixel_height > 0);
 
-        if (
-            edge->buffer &&
-            edge->pixel_data &&
-            edge->pixel_width == pixel_width &&
-            edge->pixel_height == pixel_height
-        ) {
-            // Reuse the existing allocation if the dimensions did not change.
-        }
-        else {
-            if (edge->pixel_data) {
-                usize old_map_size = (usize) edge->pixel_width * (usize) WLCLIENT_BYTES_PER_PIXEL * (usize) edge->pixel_height;
-                munmap(edge->pixel_data, old_map_size);
-                edge->pixel_data = NULL;
-            }
-            if (edge->buffer) {
-                wl_buffer_destroy(edge->buffer);
-                edge->buffer = NULL;
-            }
-            if (edge->shm_pool) {
-                wl_shm_pool_destroy(edge->shm_pool);
-                edge->shm_pool = NULL;
-            }
-            if (edge->anon_file_fd >= 0) {
-                close(edge->anon_file_fd);
-                edge->anon_file_fd = -1;
-            }
+    //     if (
+    //         edge->buffer &&
+    //         edge->pixel_data &&
+    //         edge->pixel_width == pixel_width &&
+    //         edge->pixel_height == pixel_height
+    //     ) {
+    //         // Reuse the existing allocation if the dimensions did not change.
+    //     }
+    //     else {
+    //         if (edge->pixel_data) {
+    //             usize old_map_size = (usize) edge->pixel_width * (usize) WLCLIENT_BYTES_PER_PIXEL * (usize) edge->pixel_height;
+    //             munmap(edge->pixel_data, old_map_size);
+    //             edge->pixel_data = NULL;
+    //         }
+    //         if (edge->buffer) {
+    //             wl_buffer_destroy(edge->buffer);
+    //             edge->buffer = NULL;
+    //         }
+    //         if (edge->shm_pool) {
+    //             wl_shm_pool_destroy(edge->shm_pool);
+    //             edge->shm_pool = NULL;
+    //         }
+    //         if (edge->anon_file_fd >= 0) {
+    //             close(edge->anon_file_fd);
+    //             edge->anon_file_fd = -1;
+    //         }
 
-            edge->anon_file_fd = memfd_create("wlclient-edge-debug", 0);
-            WLCLIENT_PANIC(edge->anon_file_fd >= 0, "Failed to create debug edge buffer fd");
-            i32 ret = ftruncate(edge->anon_file_fd, (off_t) map_size);
-            WLCLIENT_PANIC(ret == 0, "Failed to resize debug edge buffer fd");
+    //         edge->anon_file_fd = memfd_create("wlclient-edge-debug", 0);
+    //         WLCLIENT_PANIC(edge->anon_file_fd >= 0, "Failed to create debug edge buffer fd");
+    //         i32 ret = ftruncate(edge->anon_file_fd, (off_t) map_size);
+    //         WLCLIENT_PANIC(ret == 0, "Failed to resize debug edge buffer fd");
 
-            edge->shm_pool = wl_shm_create_pool(g_shm, edge->anon_file_fd, (i32) map_size);
-            WLCLIENT_PANIC(edge->shm_pool, "Failed to create debug edge shm pool");
+    //         edge->shm_pool = wl_shm_create_pool(g_shm, edge->anon_file_fd, (i32) map_size);
+    //         WLCLIENT_PANIC(edge->shm_pool, "Failed to create debug edge shm pool");
 
-            edge->buffer = wl_shm_pool_create_buffer(
-                edge->shm_pool,
-                0,
-                pixel_width,
-                pixel_height,
-                pixel_width * WLCLIENT_BYTES_PER_PIXEL,
-                (u32) g_preffered_pixel_format
-            );
-            WLCLIENT_PANIC(edge->buffer, "Failed to create debug edge buffer");
+    //         edge->buffer = wl_shm_pool_create_buffer(
+    //             edge->shm_pool,
+    //             0,
+    //             pixel_width,
+    //             pixel_height,
+    //             pixel_width * WLCLIENT_BYTES_PER_PIXEL,
+    //             (u32) g_preffered_pixel_format
+    //         );
+    //         WLCLIENT_PANIC(edge->buffer, "Failed to create debug edge buffer");
 
-            edge->pixel_data = mmap(NULL, map_size, PROT_READ | PROT_WRITE, MAP_SHARED, edge->anon_file_fd, 0);
-            WLCLIENT_PANIC(edge->pixel_data != MAP_FAILED, "Failed to map debug edge buffer");
+    //         edge->pixel_data = mmap(NULL, map_size, PROT_READ | PROT_WRITE, MAP_SHARED, edge->anon_file_fd, 0);
+    //         WLCLIENT_PANIC(edge->pixel_data != MAP_FAILED, "Failed to map debug edge buffer");
 
-            edge->pixel_width = pixel_width;
-            edge->pixel_height = pixel_height;
-        }
+    //         edge->pixel_width = pixel_width;
+    //         edge->pixel_height = pixel_height;
+    //     }
 
-        for (i32 p = 0; p < pixel_width * pixel_height; p++) {
-            edge->pixel_data[p * WLCLIENT_BYTES_PER_PIXEL + 0] = specs[i].b;
-            edge->pixel_data[p * WLCLIENT_BYTES_PER_PIXEL + 1] = specs[i].g;
-            edge->pixel_data[p * WLCLIENT_BYTES_PER_PIXEL + 2] = specs[i].r;
-            edge->pixel_data[p * WLCLIENT_BYTES_PER_PIXEL + 3] = specs[i].a;
-        }
+    //     for (i32 p = 0; p < pixel_width * pixel_height; p++) {
+    //         edge->pixel_data[p * WLCLIENT_BYTES_PER_PIXEL + 0] = specs[i].b;
+    //         edge->pixel_data[p * WLCLIENT_BYTES_PER_PIXEL + 1] = specs[i].g;
+    //         edge->pixel_data[p * WLCLIENT_BYTES_PER_PIXEL + 2] = specs[i].r;
+    //         edge->pixel_data[p * WLCLIENT_BYTES_PER_PIXEL + 3] = specs[i].a;
+    //     }
 
-        wl_surface_set_buffer_scale(edge->child_surface, wdata->buffer_scale);
+    //     wl_surface_set_buffer_scale(edge->child_surface, wdata->buffer_scale);
 
-        {
-            struct wl_region* input_region = wl_compositor_create_region(g_compositor);
-            WLCLIENT_PANIC(input_region, "Failed to create debug edge input region");
-            wl_region_add(input_region, 0, 0, specs[i].logical_width, specs[i].logical_height);
-            wl_surface_set_input_region(edge->child_surface, input_region);
-            wl_region_destroy(input_region);
-        }
+    //     {
+    //         struct wl_region* input_region = wl_compositor_create_region(g_compositor);
+    //         WLCLIENT_PANIC(input_region, "Failed to create debug edge input region");
+    //         wl_region_add(input_region, 0, 0, specs[i].logical_width, specs[i].logical_height);
+    //         wl_surface_set_input_region(edge->child_surface, input_region);
+    //         wl_region_destroy(input_region);
+    //     }
 
-        wl_surface_attach(edge->child_surface, edge->buffer, 0, 0);
-        wl_surface_damage_buffer(edge->child_surface, 0, 0, pixel_width, pixel_height);
-        wl_surface_commit(edge->child_surface);
-    }
+    //     wl_surface_attach(edge->child_surface, edge->buffer, 0, 0);
+    //     wl_surface_damage_buffer(edge->child_surface, 0, 0, pixel_width, pixel_height);
+    //     wl_surface_commit(edge->child_surface);
+    // }
 #endif
 }
 
@@ -964,19 +1011,19 @@ static void apply_pending_window_state(const wlclient_window* window, wlclient_w
     if (wdata->pending & WLCLIENT_PENDING_DECORATION_RESIZE) {
         if (wdata->decoration_logical_height > 0) {
             resize_decoration(wdata);
-
-            xdg_surface_set_window_geometry(
-                wdata->xdg_surface,
-                0, -wdata->decoration_logical_height,
-                wdata->logical_width, wdata->logical_height
-            );
-
             render_decoration(wdata);
         }
     }
 
     if (wdata->pending & WLCLIENT_PENDING_BACKEND_RESIZE) {
         update_framebuffer_size(window, wdata);
+
+        i32 effective_dcor_height = effective_decoration_height(wdata);
+        xdg_surface_set_window_geometry(
+            wdata->xdg_surface,
+            0, -effective_dcor_height,
+            wdata->logical_width, wdata->logical_height
+        );
 
         // The edge positions depend on the window size, so any resize must re-issue them.
         if (wdata->edge_border_size > 0) {
@@ -1144,7 +1191,8 @@ static void register_global(void* data, struct wl_registry* wl_registry, u32 id,
             .capabilities = seat_capabilities,
             .name = seat_name,
         };
-        wl_seat_add_listener(seat, &listener, NULL);
+        i32 ret = wl_seat_add_listener(seat, &listener, NULL);
+        WLCLIENT_PANIC(ret == 0, "Failed to add seat listener");
 
         store_new_input_device(id, seat);
     }
@@ -1216,6 +1264,60 @@ static void surface_preferred_buffer_scale(void* data, struct wl_surface* surfac
     // Directly apply the changes to the window state:
     wdata->pending |= WLCLIENT_PENDING_DECORATION_RESIZE | WLCLIENT_PENDING_BACKEND_RESIZE;
     apply_pending_window_state(window, wdata);
+}
+
+/**
+* This notifies the client that the surface has entered the region of an output.
+*
+* This happens:
+*   - when any part of the surface first becomes visible on a given wl_output
+*   - when the surface is moved or resized so that it overlaps a new wl_output
+*
+* Parameters:
+*   data       - user-provided pointer passed to wl_surface_add_listener
+*   wl_surface - the wl_surface instance
+*   output     - the wl_output the surface has entered
+*/
+static void surface_enter(void *data, struct wl_surface *wl_surface, struct wl_output *output) {
+    (void)data;
+    (void)wl_surface;
+    (void)output;
+}
+
+/**
+* This notifies the client that the surface has left the region of an output.
+*
+* This happens:
+*   - when the surface no longer overlaps a wl_output it previously entered
+*   - when the output is unplugged or otherwise removed
+*
+* Parameters:
+*   data       - user-provided pointer passed to wl_surface_add_listener
+*   wl_surface - the wl_surface instance
+*   output     - the wl_output the surface has left
+*/
+static void surface_leave(void *data, struct wl_surface *wl_surface, struct wl_output *output) {
+    (void)data;
+    (void)wl_surface;
+    (void)output;
+}
+
+/**
+* This advertises the buffer transform the compositor prefers for this surface.
+*
+* This happens:
+*   - when the compositor determines an optimal wl_output_transform for attached buffers
+*   - when that preferred transform changes (e.g. output rotation)
+*
+* Parameters:
+*   data       - user-provided pointer passed to wl_surface_add_listener
+*   wl_surface - the wl_surface instance
+*   transform  - wl_output_transform value the compositor prefers for buffers
+*/
+static void surface_preferred_buffer_transform(void *data, struct wl_surface *wl_surface, u32 transform) {
+    (void)data;
+    (void)wl_surface;
+    (void)transform;
 }
 
 /**
@@ -1348,9 +1450,10 @@ static void xdg_toplevel_configure(void* data, struct xdg_toplevel* toplevel, i3
     wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
     i32 new_window_width = width > 0 ? width : wdata->logical_width;
     i32 new_window_height = height > 0 ? height : wdata->logical_height;
-    clamp_logical_width_height_minimums(wdata->decoration_logical_height, &new_window_width, &new_window_height);
+    i32 effective_decor_height = effective_decoration_height(wdata);
+    clamp_logical_width_height_minimums(effective_decor_height, &new_window_width, &new_window_height);
     i32 new_content_width = new_window_width;
-    i32 new_content_height = WLCLIENT_MAX(new_window_height - wdata->decoration_logical_height, 1);
+    i32 new_content_height = WLCLIENT_MAX(new_window_height - effective_decor_height, 1);
 
     WLCLIENT_LOG_TRACE(
         "Toplevel configure: window=%" PRIi32 "x%" PRIi32 ", content=%" PRIi32 "x%" PRIi32,
@@ -1454,7 +1557,8 @@ static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilit
                 .modifiers = keyboard_modifiers,
                 .repeat_info = keyboard_repeat_info,
             };
-            wl_keyboard_add_listener(input_device->keyboard, &listener, NULL);
+            i32 ret = wl_keyboard_add_listener(input_device->keyboard, &listener, NULL);
+            WLCLIENT_PANIC(ret == 0, "Failed to add keyboard listener");
 
             WLCLIENT_LOG_DEBUG("Registered keyboard for seat(id=%"PRIu32")", input_device->seat_id);
         }
@@ -1487,7 +1591,8 @@ static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilit
                 .axis_value120 = pointer_axis_value120,
                 .axis_relative_direction = pointer_axis_relative_direction,
             };
-            wl_pointer_add_listener(input_device->pointer, &listener, NULL);
+            i32 ret = wl_pointer_add_listener(input_device->pointer, &listener, NULL);
+            WLCLIENT_PANIC(ret == 0, "Failed to add pointer listener");
 
             WLCLIENT_LOG_DEBUG("Registered mouse for seat(id=%"PRIu32")", input_device->seat_id);
         }
@@ -1522,7 +1627,7 @@ static void seat_name(void *data, struct wl_seat *wl_seat, const char *name) {
 
     WLCLIENT_LOG_TRACE("Seat name: %s", name);
     wlclient_input_device* input_device = find_input_device_by_seat(wl_seat);
-    input_device->seat_name = name; // TODO: This is not safe, it needs to be a copy! Event routing might depend on this garbage..
+    input_device->seat_name = strdup(name); // TODO: [DEFAULT_ALLOCATION] Remove if user defined allocator is allowed.
 }
 
 /**
