@@ -24,6 +24,27 @@
 //                  One way to check this is to see whether these problems happen for glfw as well.
 // TODO: [DECORATION] The current decoration rendering is double buffered by default. That should be configurable. Does
 //                    it even need to be double buffered?
+// TODO: [COMPATIBILITY] Gamespot compositor (which SteamOS uses) might not support subcompositors!
+
+#define WLCLIENT_MIN_DECORATION_HEIGHT 20
+#define WLCLIENT_MIN_CONTENT_HEIGHT 10
+#define WLCLIENT_MIN_CONTENT_WIDTH 10
+
+#define WLCLIENT_MAX_INPUT_DEVICES 5
+#define WLCLIENT_MAX_POINTERS 10
+
+typedef struct wlclient_input_device {
+    // Seats provide access to different types of user input.
+    bool used;
+    u32 id;
+    struct wl_seat* seat;
+    const char* seat_name;
+
+    // Pointers represent one or more input devices, such as mice, which control the pointer location and pointer_focus
+    // of a seat.
+    struct wl_pointer* pointers[WLCLIENT_MAX_POINTERS];
+    i32 pointersCount;
+} wlclient_input_device;
 
 // A wl_display object represents a client connection to a Wayland compositor.
 static struct wl_display* g_display = NULL;
@@ -42,14 +63,10 @@ static struct wl_shm* g_shm = NULL;
 // The preferred pixel format for software rendering.
 static i32 g_preffered_pixel_format = -1;
 
-// TODO: Do I need to support multiple seats and how do I test that?
-static struct wl_seat* g_seat = NULL;
-static struct wl_pointer* g_pointer = NULL;
-static const char* g_seatName = NULL;
+// State for input devices.
+static struct wlclient_input_device g_input_devices[WLCLIENT_MAX_INPUT_DEVICES] = {0};
+i32 g_input_devices_count = 0;
 
-#define WLCLIENT_MIN_DECORATION_HEIGHT 20
-#define WLCLIENT_MIN_CONTENT_HEIGHT 10
-#define WLCLIENT_MIN_CONTENT_WIDTH 10
 // State for all the open windows.
 static wlclient_window_data g_windows[WLCLIENT_WINDOWS_COUNT] = {0};
 
@@ -66,6 +83,8 @@ static void destroy_window_data(wlclient_window_data* wdata);
 static void destroy_decoration_resources(wlclient_window_data* wdata);
 static void destroy_decoration_buffers(wlclient_window_data* wdata);
 static void destroy_edge_resources(wlclient_window_data* wdata);
+static void destroy_all_input_devices(void);
+static void destroy_input_device(wlclient_input_device* input_device);
 
 static void clamp_logical_width_height_minimums(i32 decoration_logical_height, i32* width, i32* height);
 static void clamp_logical_width_height_known_bounds(i32 max_logical_width, i32 max_logical_height, i32* width, i32* height);
@@ -78,12 +97,16 @@ static void render_decoration(wlclient_window_data* wdata);
 static void update_framebuffer_size(const wlclient_window* window, wlclient_window_data* wdata);
 static void apply_pending_window_state(const wlclient_window* window, wlclient_window_data* wdata);
 
+static void store_new_input_device(u32 id, struct wl_seat* seat);
+static wlclient_input_device* find_input_device_by_seat(struct wl_seat* seat);
+static i32 find_input_device_index_by_id(u32 id);
+
 //======================================================================================================================
 // Wayland Handlers
 //======================================================================================================================
 
-static void register_global(void* data, struct wl_registry* wl_registry, u32 name, const char* interface, u32 version);
-static void register_global_remove(void* data, struct wl_registry* wl_registry, u32 name);
+static void register_global(void* data, struct wl_registry* wl_registry, u32 id, const char* interface, u32 version);
+static void register_global_remove(void* data, struct wl_registry* wl_registry, u32 id);
 static void surface_preferred_buffer_scale(void* data, struct wl_surface* surface, i32 factor);
 static void shm_pick_format(void *data, struct wl_shm *wl_shm, u32 format);
 static void release_buffer(void *data, struct wl_buffer *wl_buffer);
@@ -227,7 +250,7 @@ wlclient_error_code wlclient_init(void) {
     if (!g_subcompositor) goto error;
     if (!g_xdgWmBase) goto error;
     if (!g_shm) goto error;
-    if (!g_seat) goto error;
+    if (g_input_devices_count <= 0) goto error;
 
     // Do a second roundtrip to receive events emitted by newly bound globals (like wl_shm).
     ret = wl_display_roundtrip(g_display);
@@ -260,6 +283,8 @@ void wlclient_shutdown(void) {
         wlclient_backend_shutdown();
         wlclient_backend_shutdown = NULL;
     }
+
+    destroy_all_input_devices();
 
     if (g_compositor) wl_compositor_destroy(g_compositor);
     if (g_subcompositor) wl_subcompositor_destroy(g_subcompositor);
@@ -364,6 +389,10 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
             goto error;
         }
     }
+
+    // Mark the initial decoration anonymous file as strictly invalid.
+    // Need to do this early in case of an error and abrupt shutdown.
+    wdata->decoration_anon_file_fd = -1;
 
     // Create Surface
     {
@@ -472,7 +501,6 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
     wdata->decoration_hide = !(decor_height > 0);
     wdata->decoration_logical_height = decor_height;
     wdata->decoration_pixel_height = decor_height;
-    wdata->decoration_anon_file_fd = -1; // Mark the initial decoration anonymous file as strictly invalid.
     wdata->decoration_pixel_width = width;
     wdata->used = true; // This needs to set before the round trip.
     wdata->pending = WLCLIENT_PENDING_DECORATION_RESIZE | WLCLIENT_PENDING_BACKEND_RESIZE;
@@ -536,6 +564,31 @@ static void destroy_edge_resources(wlclient_window_data* wdata) {
         if (wdata->edge_surfaces[i].subsurface) wl_subsurface_destroy(wdata->edge_surfaces[i].subsurface);
         if (wdata->edge_surfaces[i].surface) wl_surface_destroy(wdata->edge_surfaces[i].surface);
     }
+}
+
+static void destroy_all_input_devices(void) {
+    WLCLIENT_LOG_DEBUG("Destroying all input devices...");
+
+    for (i32 i = 0; i < g_input_devices_count; i++) {
+        struct wlclient_input_device* input_device = &g_input_devices[i];
+        destroy_input_device(input_device);
+    }
+
+    g_input_devices_count = 0;
+
+    WLCLIENT_LOG_DEBUG("Input devices destroyed");
+}
+
+static void destroy_input_device(wlclient_input_device* input_device) {
+    for (i32 i = 0; i < input_device->pointersCount; i++) {
+        struct wl_pointer* pointer = input_device->pointers[i];
+        wl_pointer_release(pointer);
+    }
+
+    if (input_device->seat) wl_seat_destroy(input_device->seat);
+
+    // Marks the pointer as unused along with zeroing out everything else:
+    memset(input_device, 0, sizeof(*input_device));
 }
 
 static void clamp_logical_width_height_minimums(i32 decoration_logical_height, i32* width, i32* height) {
@@ -636,7 +689,7 @@ static void resize_decoration_shm_pool(wlclient_window_data* wdata, i32 new_pool
     }
 
     // Close the old anonymous file:
-    if (wdata->decoration_anon_file_fd >= 0) {
+    if (wdata->decoration_anon_file_fd > 0) {
         close(wdata->decoration_anon_file_fd);
         wdata->decoration_anon_file_fd = -1;
     }
@@ -648,7 +701,7 @@ static void resize_decoration_shm_pool(wlclient_window_data* wdata, i32 new_pool
 
     // Create a new anonymous file for the shared pixel buffer:
     wdata->decoration_anon_file_fd = memfd_create("tmp", 0);
-    WLCLIENT_PANIC(wdata->decoration_anon_file_fd >= 0, "Failed to create temporary anonymous file");
+    WLCLIENT_PANIC(wdata->decoration_anon_file_fd > 0, "Failed to create temporary anonymous file");
 
     i32 ret = ftruncate(wdata->decoration_anon_file_fd, new_pool_size);
     WLCLIENT_PANIC(ret == 0, "Failed to truncate temporary anonymous file");
@@ -679,10 +732,10 @@ static void recreate_decoration_buffers(wlclient_window_data* wdata, i32 buf_siz
         );
         WLCLIENT_PANIC(wdata->decoration_buffers[i], "Failed to create decoration buffer from pool");
 
-        static struct wl_buffer_listener listender = {
+        static struct wl_buffer_listener listener = {
             .release = release_buffer,
         };
-        i32 ret = wl_buffer_add_listener(wdata->decoration_buffers[i], &listender, &wdata->decoration_buffer_ready_states[i]);
+        i32 ret = wl_buffer_add_listener(wdata->decoration_buffers[i], &listener, &wdata->decoration_buffer_ready_states[i]);
         WLCLIENT_PANIC(ret == 0, "Failed to set release buffer listener");
 
         wdata->decoration_buffer_ready_states[i] = true;
@@ -785,6 +838,65 @@ static void apply_pending_window_state(const wlclient_window* window, wlclient_w
     wdata->pending = WLCLIENT_PENDING_NONE;
 }
 
+static void store_new_input_device(u32 id, struct wl_seat* seat) {
+    WLCLIENT_PANIC(
+        g_input_devices_count < WLCLIENT_MAX_INPUT_DEVICES,
+        "[BUG] Maximum allowed seats (%"PRIi32") exceeded.",
+        WLCLIENT_MAX_INPUT_DEVICES
+    );
+
+    wlclient_input_device new_device = {
+        .id = id,
+        .seat = seat,
+        .used = true
+    };
+
+    g_input_devices[g_input_devices_count] = new_device;
+    g_input_devices_count++;
+}
+
+static wlclient_input_device* find_input_device_by_seat(struct wl_seat* seat) {
+    for (i32 i = 0; i < g_input_devices_count; i++) {
+        if (g_input_devices[i].seat == seat && g_input_devices[i].used) {
+            return &g_input_devices[i];
+        }
+    }
+
+    WLCLIENT_PANIC(false, "[BUG] Find failed; seat not registered");
+    return NULL;
+}
+
+static i32 find_input_device_index_by_id(u32 id) {
+    for (i32 i = 0; i < g_input_devices_count; i++) {
+        if (g_input_devices[i].id == id) return i;
+    }
+    return -1;
+}
+
+static void remove_and_destroy_input_device_by_id(i32 idx) {
+    WLCLIENT_PANIC(
+        idx >= 0 && idx < g_input_devices_count,
+        "[BUG] Remove failed; invalid index idx=%" PRIi32,
+        idx
+    );
+
+    wlclient_input_device* input_device = &g_input_devices[idx];
+
+    destroy_input_device(input_device);
+
+    if (idx == g_input_devices_count - 1) {
+        g_input_devices_count--;
+        return;
+    }
+
+    i32 last = g_input_devices_count - idx - 1;
+    if (last > 0) {
+        memmove(&g_input_devices[idx], &g_input_devices[idx + 1], (usize)(last) * sizeof(*input_device));
+    }
+
+    g_input_devices_count--;
+}
+
 //======================================================================================================================
 // Wayland Handlers Implementations
 //======================================================================================================================
@@ -800,30 +912,31 @@ static void apply_pending_window_state(const wlclient_window* window, wlclient_w
 * Parameters:
 *   data      - user-provided pointer passed to wl_registry_add_listener
 *   registry  - the wl_registry instance
-*   name      - unique numeric identifier for this global
+*   id        - unique numeric identifier for this global
 *   interface - string name of the interface (e.g. "wl_compositor", "wl_seat")
 *   version   - maximum supported version of the interface
 */
-static void register_global(void* data, struct wl_registry* wl_registry, u32 name, const char* interface, u32 version) {
+static void register_global(void* data, struct wl_registry* wl_registry, u32 id, const char* interface, u32 version) {
     WLCLIENT_LOG_TRACE("Register global received for interface = %s", interface);
 
     if (strcmp(interface, "wl_compositor") == 0) {
         WLCLIENT_PANIC(!g_compositor, "wl_compositor re-registered");
-
         u32 effective_version = WLCLIENT_MIN((u32) wl_compositor_interface.version, version);
-        g_compositor = wl_registry_bind(wl_registry, name, &wl_compositor_interface, effective_version);
+        // TODO: [COMPATIBILITY] - a lot of compositors support older versions, so this requirement needs to be dropped.
+        WLCLIENT_PANIC(effective_version >= 6, "required compositor version is 6");
+        g_compositor = wl_registry_bind(wl_registry, id, &wl_compositor_interface, effective_version);
     }
     else if (strcmp(interface, "wl_subcompositor") == 0) {
         WLCLIENT_PANIC(!g_subcompositor, "wl_subcompositor re-registered");
 
         u32 effective_version = WLCLIENT_MIN((u32) wl_subcompositor_interface.version, version);
-        g_subcompositor = wl_registry_bind(wl_registry, name, &wl_subcompositor_interface, effective_version);
+        g_subcompositor = wl_registry_bind(wl_registry, id, &wl_subcompositor_interface, effective_version);
     }
     else if (strcmp(interface, "xdg_wm_base") == 0) {
         WLCLIENT_PANIC(!g_xdgWmBase, "xdg_wm_base re-registered");
 
         u32 effective_version = WLCLIENT_MIN((u32) xdg_wm_base_interface.version, version);
-        g_xdgWmBase = wl_registry_bind(wl_registry, name, &xdg_wm_base_interface, effective_version);
+        g_xdgWmBase = wl_registry_bind(wl_registry, id, &xdg_wm_base_interface, effective_version);
         if (!g_xdgWmBase) return;
 
         // Setup ping handler
@@ -837,7 +950,7 @@ static void register_global(void* data, struct wl_registry* wl_registry, u32 nam
         WLCLIENT_PANIC(!g_shm, "wl_shm re-registered");
 
         u32 effective_version = WLCLIENT_MIN((u32) wl_shm_interface.version, version);
-        g_shm = wl_registry_bind(wl_registry, name, &wl_shm_interface, effective_version);
+        g_shm = wl_registry_bind(wl_registry, id, &wl_shm_interface, effective_version);
         if (!g_shm) return;
 
         static const struct wl_shm_listener listener = {
@@ -847,17 +960,20 @@ static void register_global(void* data, struct wl_registry* wl_registry, u32 nam
         WLCLIENT_PANIC(ret == 0, "failed to setup shm format listener");
     }
     else if (strcmp(interface, "wl_seat") == 0) {
-        WLCLIENT_PANIC(!g_seat, "TODO: This is valid I just don't know what to do with it yet.");
+        u32 effective_version = WLCLIENT_MIN((u32) wl_seat_interface.version, version);
+        // TODO: [COMPATIBILITY] - pointer release requires seat version above 3. Which is probably fine everywhere.
+        WLCLIENT_PANIC(effective_version >= 3, "required wl_seat version is 3");
 
-        u32 effective_version = WLCLIENT_MIN((u32) wl_shm_interface.version, version);
-        g_seat = wl_registry_bind(wl_registry, name, &wl_seat_interface, effective_version);
-        if (!g_seat) return;
+        struct wl_seat* seat = wl_registry_bind(wl_registry, id, &wl_seat_interface, effective_version);
+        if (!seat) return;
 
         static const struct wl_seat_listener listener = {
             .capabilities = seat_capabilities,
             .name = seat_name,
         };
-        wl_seat_add_listener(g_seat, &listener, data);
+        wl_seat_add_listener(seat, &listener, data);
+
+        store_new_input_device(id, seat);
     }
 }
 
@@ -870,12 +986,20 @@ static void register_global(void* data, struct wl_registry* wl_registry, u32 nam
 * Parameters:
 *   data      - user-provided pointer passed to wl_registry_add_listener
 *   registry  - the wl_registry instance
-*   name      - unique numeric identifier for the removed global
+*   id        - unique numeric identifier for the removed global
 */
-static void register_global_remove(void* data, struct wl_registry* wl_registry, u32 name) {
+static void register_global_remove(void* data, struct wl_registry* wl_registry, u32 id) {
     (void)data;
     (void)wl_registry;
-    WLCLIENT_LOG_TRACE("Removing %" PRIu32, name);
+    WLCLIENT_LOG_TRACE("Removing %" PRIu32, id);
+
+    // TODO: I should make some type detecting logic that matches devices i care about to run destroy logic.
+
+    {
+        // TODO: Is this safe to do at this point ? If not, where should this be deferred to?
+        i32 idx = find_input_device_index_by_id(id);
+        if (idx >= 0) remove_and_destroy_input_device_by_id(idx);
+    }
 }
 
 /**
@@ -906,6 +1030,8 @@ static void surface_preferred_buffer_scale(void* data, struct wl_surface* surfac
         wl_surface_set_buffer_scale(wdata->decoration_surface, factor);
     }
     wdata->pending |= WLCLIENT_PENDING_DECORATION_RESIZE | WLCLIENT_PENDING_BACKEND_RESIZE;
+
+    apply_pending_window_state(window, wdata);
 }
 
 /**
@@ -1145,7 +1271,8 @@ static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilit
 */
 static void seat_name(void *data, struct wl_seat *wl_seat, const char *name) {
     (void)data;
-    (void)wl_seat;
 
     WLCLIENT_LOG_TRACE("Seat name: %s", name);
+    wlclient_input_device* input_device = find_input_device_by_seat(wl_seat);
+    input_device->seat_name = name; // TODO: This is not safe, it needs to be a copy! Event routing might depend on this garbage..
 }
