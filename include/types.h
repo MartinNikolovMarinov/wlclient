@@ -85,6 +85,26 @@ typedef enum {
     WLCLIENT_EDGE_COUNT,
 } wlclient_edge;
 
+typedef struct wlclient_surface_node {
+    // The surface is a child of the main surface:
+    struct wl_surface* child_surface;
+    // The subsurface binds the above surface as a child of the main surface.
+    struct wl_subsurface* subsurface;
+    // Decoration dimensions in pixels (logical size * buffer_scale).
+    i32 pixel_width;
+    i32 pixel_height;
+    // The shared memory buffers pool.
+    struct wl_shm_pool* shm_pool;
+    // wl_buffer handle from the pool.
+    struct wl_buffer* buffer;
+    // The ready state indicates when the compositor has released the buffer.
+    bool ready_state;
+    // Anonymous file backing the shm pool.
+    i32 anon_file_fd;
+    // The mmaped pixel bytes.
+    u8* pixel_data;
+} wlclient_surface_node;
+
 typedef struct wlclient_window_data {
     bool used;
     wlclient_pending_flags pending;
@@ -100,40 +120,23 @@ typedef struct wlclient_window_data {
     // Integer scale factor from the compositor. Multiplied with logical sizes to get pixel sizes.
     i32 buffer_scale;
 
-    // Core wayland surface — the drawable area that pixel buffers attach to.
+    // Core main wayland surface — the drawable area that pixel buffers attach to.
     struct wl_surface* surface;
     // XDG surface role — adds configure/ack lifecycle to the raw surface.
     struct xdg_surface* xdg_surface;
     // XDG toplevel role — makes the surface a desktop window with title, close, resize, etc.
     struct xdg_toplevel* xdg_toplevel;
 
+    // The subsurface for the client side decoration. Positioned above the main surface to render the title bar.
+    wlclient_surface_node decoration_node;
     // Should the decoration be visible.
     bool decoration_hide;
-    // Decoration subsurface, positioned above the main surface to render the title bar.
-    struct wl_surface* decoration_surface;
-    // Binds decoration_surface as a child of the main surface.
-    struct wl_subsurface* decoration_subsurface;
     // Logical decoration height in surface coordinates. Immutable after window creation.
     i32 decoration_logical_height;
-    // Decoration dimensions in pixels (logical size * buffer_scale).
-    i32 decoration_pixel_height, decoration_pixel_width;
-    // Anonymous file backing the shm pool.
-    i32 decoration_anon_file_fd;
-    // Pool shared with the compositor.
-    struct wl_shm_pool* decoration_shm_pool;
-    // Double-buffered wl_buffer handles into the pool.
-    struct wl_buffer* decoration_buffers[2];
-    // True when the compositor has released the buffer.
-    bool decoration_buffer_ready_states[2];
-    // Single mmap of the entire pool.
-    u8* decoration_pixel_data;
 
     // Invisible resize edge subsurfaces. These are transparent surfaces positioned around the window
     // border to provide hit regions for interactive resize. Independent from the visible title bar decoration.
-    struct {
-        struct wl_surface* surface;
-        struct wl_subsurface* subsurface;
-    } edge_surfaces[WLCLIENT_EDGE_COUNT];
+    wlclient_surface_node edge_nodes[WLCLIENT_EDGE_COUNT];
     // Logical border width for all edges. Immutable after window creation. 0 means no edges.
     i32 edge_border_size;
 

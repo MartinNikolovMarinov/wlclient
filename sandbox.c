@@ -28,7 +28,7 @@ i32 main(void) {
 
     wlclient_error_code result_code;
 
-    wlclient_log_set_level(WLCLIENT_LOG_LEVEL_DEBUG);
+    wlclient_log_set_level(WLCLIENT_LOG_LEVEL_TRACE);
     result_code = wlclient_init();
     if (result_code != WLCLIENT_ERROR_OK) {
         printf("ERROR - %d\n", result_code);
@@ -78,7 +78,7 @@ i32 main(void) {
     }
 
     // Configure vsync:
-    result_code = wlclient_egl_set_swap_interval(1);
+    result_code = wlclient_egl_set_swap_interval(0);
     if (result_code != WLCLIENT_ERROR_OK) {
         printf("ERROR - %d\n", result_code);
         goto error;
@@ -89,7 +89,7 @@ i32 main(void) {
     i32 fb_w = 0, fb_h = 0;
     wlclient_get_framebuffer_size(&window, &fb_w, &fb_h);
     glViewport(0, 0, fb_w, fb_h);
-    // i32 frame_counter = 1;
+    i32 frame_counter = 1;
     // wlclient_resize_window(&window, frame_counter, frame_counter*2);
 
     // TODO: Add a user-facing resize callback that fires from update_framebuffer_size so glViewport
@@ -101,8 +101,8 @@ i32 main(void) {
             goto error;
         }
 
-        // frame_counter++;
-        // wlclient_resize_window(&window, frame_counter, frame_counter*2);
+        frame_counter++;
+        wlclient_window_set_size(&window, frame_counter, frame_counter*2);
 
         wlclient_get_framebuffer_size(&window, &fb_w, &fb_h);
         glViewport(0, 0, fb_w, fb_h);
