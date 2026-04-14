@@ -28,7 +28,7 @@ i32 main(void) {
 
     wlclient_error_code result_code;
 
-    wlclient_log_set_level(WLCLIENT_LOG_LEVEL_TRACE);
+    wlclient_log_set_level(WLCLIENT_LOG_LEVEL_DEBUG);
     result_code = wlclient_init();
     if (result_code != WLCLIENT_ERROR_OK) {
         printf("ERROR - %d\n", result_code);
@@ -100,7 +100,6 @@ i32 main(void) {
             printf("ERROR - %d\n", result_code);
             goto error;
         }
-
 
         // frame_counter++;
         // wlclient_resize_window(&window, frame_counter, frame_counter*2);

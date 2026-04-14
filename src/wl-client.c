@@ -31,19 +31,21 @@
 #define WLCLIENT_MIN_CONTENT_WIDTH 10
 
 #define WLCLIENT_MAX_INPUT_DEVICES 5
-#define WLCLIENT_MAX_POINTERS 10
+
+// Minimum required versions for each wayland interface. If the compositor advertises a lower version than listed here,
+// initialization panics.
+#define WLCLIENT_MIN_WL_COMPOSITOR_VERSION    6 // wl_surface.preferred_buffer_scale (v6)
+#define WLCLIENT_MIN_WL_SUBCOMPOSITOR_VERSION 1
+#define WLCLIENT_MIN_XDG_WM_BASE_VERSION      1
+#define WLCLIENT_MIN_WL_SHM_VERSION           1
+#define WLCLIENT_MIN_WL_SEAT_VERSION          5 // wl_pointer.frame (v5)
 
 typedef struct wlclient_input_device {
-    // Seats provide access to different types of user input.
     bool used;
-    u32 id;
+    u32 seat_id;
     struct wl_seat* seat;
     const char* seat_name;
-
-    // Pointers represent one or more input devices, such as mice, which control the pointer location and pointer_focus
-    // of a seat.
-    struct wl_pointer* pointers[WLCLIENT_MAX_POINTERS];
-    i32 pointersCount;
+    struct wl_pointer* pointer;
 } wlclient_input_device;
 
 // A wl_display object represents a client connection to a Wayland compositor.
@@ -94,6 +96,8 @@ static void resize_decoration_shm_pool(wlclient_window_data* wdata, i32 new_pool
 static void recreate_decoration_buffers(wlclient_window_data* wdata, i32 buf_size, i32 pool_size);
 static void render_decoration(wlclient_window_data* wdata);
 
+static void position_edges(wlclient_window_data* wdata);
+
 static void update_framebuffer_size(const wlclient_window* window, wlclient_window_data* wdata);
 static void apply_pending_window_state(const wlclient_window* window, wlclient_window_data* wdata);
 
@@ -109,7 +113,7 @@ static void register_global(void* data, struct wl_registry* wl_registry, u32 id,
 static void register_global_remove(void* data, struct wl_registry* wl_registry, u32 id);
 static void surface_preferred_buffer_scale(void* data, struct wl_surface* surface, i32 factor);
 static void shm_pick_format(void *data, struct wl_shm *wl_shm, u32 format);
-static void release_buffer(void *data, struct wl_buffer *wl_buffer);
+static void decoration_release_buffer(void *data, struct wl_buffer *wl_buffer);
 
 static void xdg_wm_base_ping(void* data, struct xdg_wm_base* xdg_wm_base, u32 serial);
 static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u32 serial);
@@ -120,6 +124,18 @@ static void xdg_toplevel_configure_wm_capabilities(void*, struct xdg_toplevel* t
 
 static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilities);
 static void seat_name(void *data, struct wl_seat *wl_seat, const char *name);
+
+static void pointer_enter(void* data, struct wl_pointer* wl_pointer, u32 serial, struct wl_surface* surface, wl_fixed_t surface_x, wl_fixed_t surface_y);
+static void pointer_leave(void* data, struct wl_pointer* wl_pointer, u32 serial, struct wl_surface* surface);
+static void pointer_motion(void* data, struct wl_pointer* wl_pointer, u32 time, wl_fixed_t surface_x, wl_fixed_t surface_y);
+static void pointer_button(void* data, struct wl_pointer* wl_pointer, u32 serial, u32 time, u32 button, u32 state);
+static void pointer_axis(void* data, struct wl_pointer* wl_pointer, u32 time, u32 axis, wl_fixed_t value);
+static void pointer_frame(void* data, struct wl_pointer* wl_pointer);
+static void pointer_axis_source(void* data, struct wl_pointer* wl_pointer, u32 axis_source);
+static void pointer_axis_stop(void* data, struct wl_pointer* wl_pointer, u32 time, u32 axis);
+static void pointer_axis_discrete(void* data, struct wl_pointer* wl_pointer, u32 axis, i32 discrete);
+static void pointer_axis_value120(void* data, struct wl_pointer* wl_pointer, u32 axis, i32 value120);
+static void pointer_axis_relative_direction(void* data, struct wl_pointer* wl_pointer, u32 axis, u32 direction);
 
 //======================================================================================================================
 // Public
@@ -173,6 +189,10 @@ void wlclient_toggle_decoration(wlclient_window* window) {
 
     if (wdata->decoration_hide) {
         wlclient_hide_surface(wdata->decoration_surface);
+        // The decoration surface is a child of the main surface and it is synchronized with it. Therefore it is
+        // necessary to commit the main surface to make sure the toggle works. This is not abvious because the problems
+        // gets masked by receiving other events, but this commit is technically necessary.
+        wl_surface_commit(wdata->surface);
     }
     else {
         render_decoration(wdata);
@@ -183,7 +203,7 @@ void wlclient_window_set_size(wlclient_window* window, i32 width, i32 height) {
     wlclient_window_data* wdata = wlclient_get_wl_window_data(window);
     bool width_changed = false;
 
-    WLCLIENT_LOG_TRACE("Resize window called with size: %" PRIi32 "x%" PRIi32, width, height);
+    WLCLIENT_LOG_DEBUG("Resize window called with size: %" PRIi32 "x%" PRIi32, width, height);
 
     WLCLIENT_ASSERT(width > 0);
     WLCLIENT_ASSERT(height > 0);
@@ -192,7 +212,7 @@ void wlclient_window_set_size(wlclient_window* window, i32 width, i32 height) {
     clamp_logical_width_height_known_bounds(wdata->max_logical_width, wdata->max_logical_height, &width, &height);
 
     if (width == wdata->logical_width && height == wdata->logical_height) {
-        WLCLIENT_LOG_TRACE("Resizing to the same width and height; skipping...");
+        WLCLIENT_LOG_DEBUG("Resizing to the same width and height; skipping...");
         return;
     }
 
@@ -207,7 +227,7 @@ void wlclient_window_set_size(wlclient_window* window, i32 width, i32 height) {
     wdata->content_logical_height = wdata->logical_height - wdata->decoration_logical_height;
     wdata->pending |= WLCLIENT_PENDING_BACKEND_RESIZE;
 
-    WLCLIENT_LOG_TRACE(
+    WLCLIENT_LOG_DEBUG(
         "Resizing to:\n  logical_size: %" PRIi32 "x%" PRIi32 ",\n  content_logical_size: %"PRIi32 "x%" PRIi32
         "\n  decoration_logicl_height: %" PRIi32 "",
         wdata->logical_width, wdata->logical_height,
@@ -250,13 +270,22 @@ wlclient_error_code wlclient_init(void) {
     if (!g_subcompositor) goto error;
     if (!g_xdgWmBase) goto error;
     if (!g_shm) goto error;
-    if (g_input_devices_count <= 0) goto error;
 
     // Do a second roundtrip to receive events emitted by newly bound globals (like wl_shm).
     ret = wl_display_roundtrip(g_display);
     if (ret < 0) goto error;
 
     if (g_preffered_pixel_format < 0) goto error;
+
+    // Verify device inputs are configured correctly:
+    if (g_input_devices_count <= 0) goto error;
+    for (i32 i = 0; i < g_input_devices_count; i++) {
+        wlclient_input_device* d = &g_input_devices[i];
+        if (!d->used) goto error;
+        if (!d->seat) goto error;
+        if (!d->seat_id) goto error;
+        if (!d->pointer) goto error;
+    }
 
     WLCLIENT_LOG_DEBUG("Initialization done");
     return WLCLIENT_ERROR_OK;
@@ -466,28 +495,6 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
             );
             if (!wdata->edge_surfaces[i].subsurface) goto error;
         }
-
-        // Position edges around the content area. Positions are relative to the main surface origin.
-        wl_subsurface_set_position(
-            wdata->edge_surfaces[WLCLIENT_EDGE_TOP].subsurface,
-            -edge_border_size, -decor_height - edge_border_size
-        );
-        wl_subsurface_set_position(
-            wdata->edge_surfaces[WLCLIENT_EDGE_BOTTOM].subsurface,
-            -edge_border_size, height
-        );
-        wl_subsurface_set_position(
-            wdata->edge_surfaces[WLCLIENT_EDGE_LEFT].subsurface,
-            -edge_border_size, -decor_height
-        );
-        wl_subsurface_set_position(
-            wdata->edge_surfaces[WLCLIENT_EDGE_RIGHT].subsurface,
-            width, -decor_height
-        );
-
-        for (i32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
-            wl_surface_commit(wdata->edge_surfaces[i].surface);
-        }
     }
 
     wdata->edge_border_size = edge_border_size;
@@ -504,6 +511,11 @@ wlclient_error_code wlclient_create_window(i32 width, i32 height, const char* ti
     wdata->decoration_pixel_width = width;
     wdata->used = true; // This needs to set before the round trip.
     wdata->pending = WLCLIENT_PENDING_DECORATION_RESIZE | WLCLIENT_PENDING_BACKEND_RESIZE;
+
+    // Position edges before the first parent commit so the cached subsurface state is applied synchronously.
+    if (wdata->edge_border_size > 0) {
+        position_edges(wdata);
+    }
 
     // Commit the main surface and roundtrip to synchronize the new window creation.
     // The roundtrip dispatches the first xdg_surface_configure, which creates the decoration buffers.
@@ -580,11 +592,7 @@ static void destroy_all_input_devices(void) {
 }
 
 static void destroy_input_device(wlclient_input_device* input_device) {
-    for (i32 i = 0; i < input_device->pointersCount; i++) {
-        struct wl_pointer* pointer = input_device->pointers[i];
-        wl_pointer_release(pointer);
-    }
-
+    if (input_device->pointer) wl_pointer_release(input_device->pointer);
     if (input_device->seat) wl_seat_destroy(input_device->seat);
 
     // Marks the pointer as unused along with zeroing out everything else:
@@ -733,7 +741,7 @@ static void recreate_decoration_buffers(wlclient_window_data* wdata, i32 buf_siz
         WLCLIENT_PANIC(wdata->decoration_buffers[i], "Failed to create decoration buffer from pool");
 
         static struct wl_buffer_listener listener = {
-            .release = release_buffer,
+            .release = decoration_release_buffer,
         };
         i32 ret = wl_buffer_add_listener(wdata->decoration_buffers[i], &listener, &wdata->decoration_buffer_ready_states[i]);
         WLCLIENT_PANIC(ret == 0, "Failed to set release buffer listener");
@@ -743,11 +751,11 @@ static void recreate_decoration_buffers(wlclient_window_data* wdata, i32 buf_siz
 }
 
 static void render_decoration(wlclient_window_data* wdata) {
-    WLCLIENT_LOG_TRACE("Render decoration called...");
+    WLCLIENT_LOG_DEBUG("Render decoration called...");
     WLCLIENT_ASSERT(wdata->decoration_logical_height > 0, "[BUG] Rendering decoration with logical wight <= 0");
 
     if (wdata->decoration_hide) {
-        WLCLIENT_LOG_TRACE("Decoration hidden; will not render");
+        WLCLIENT_LOG_DEBUG("Decoration hidden; will not render");
         return;
     }
 
@@ -761,12 +769,12 @@ static void render_decoration(wlclient_window_data* wdata) {
             }
         }
         if (buf_idx < 0) {
-            WLCLIENT_LOG_TRACE("No available buffers for decoration rendering..");
+            WLCLIENT_LOG_DEBUG("No available buffers for decoration rendering..");
             return; // no buffer available
         }
     }
 
-    WLCLIENT_LOG_TRACE("Buffer Index = %"PRIi32"", buf_idx);
+    WLCLIENT_LOG_DEBUG("Buffer Index = %"PRIi32"", buf_idx);
 
     // TODO: Draw the actual decoration toolbar here instead of the hardcoded blue rect:
     i32 buf_size = (wdata->decoration_pixel_width * WLCLIENT_BYTES_PER_PIXEL) * wdata->decoration_pixel_height;
@@ -784,7 +792,45 @@ static void render_decoration(wlclient_window_data* wdata) {
     wl_surface_damage_buffer(wdata->decoration_surface, 0, 0, wdata->decoration_pixel_width, wdata->decoration_pixel_height);
     wl_surface_commit(wdata->decoration_surface);
 
-    WLCLIENT_LOG_TRACE("Render decoration done.");
+    WLCLIENT_LOG_DEBUG("Render decoration done.");
+}
+
+/**
+* Position the invisible resize-edge subsurfaces relative to the main surface origin.
+*
+* The main wl_surface origin sits at the top-left of the content area; the decoration subsurface is parented at
+* y=-decoration_logical_height. The four edges are placed to hug the window's visual bounding box:
+*   - top edge:    above the decoration
+*   - left edge:   spanning from the top of the decoration to the bottom of the content
+*   - right edge:  same, on the opposite side
+*   - bottom edge: below the content
+*
+* Subsurface positions are cached state — the changes only take effect on the next parent surface commit.
+*/
+static void position_edges(wlclient_window_data* wdata) {
+    WLCLIENT_ASSERT(wdata->edge_border_size > 0);
+
+    i32 border = wdata->edge_border_size;
+    i32 decor = wdata->decoration_logical_height;
+    i32 content_bottom = wdata->content_logical_height;
+    i32 content_right = wdata->logical_width;
+
+    wl_subsurface_set_position(
+        wdata->edge_surfaces[WLCLIENT_EDGE_TOP].subsurface,
+        -border, -decor - border
+    );
+    wl_subsurface_set_position(
+        wdata->edge_surfaces[WLCLIENT_EDGE_BOTTOM].subsurface,
+        -border, content_bottom
+    );
+    wl_subsurface_set_position(
+        wdata->edge_surfaces[WLCLIENT_EDGE_LEFT].subsurface,
+        -border, -decor
+    );
+    wl_subsurface_set_position(
+        wdata->edge_surfaces[WLCLIENT_EDGE_RIGHT].subsurface,
+        content_right, -decor
+    );
 }
 
 static void update_framebuffer_size(const wlclient_window* window, wlclient_window_data* wdata) {
@@ -802,7 +848,7 @@ static void update_framebuffer_size(const wlclient_window* window, wlclient_wind
     wdata->framebuffer_pixel_width = framebuffer_width;
     wdata->framebuffer_pixel_height = framebuffer_height;
 
-    WLCLIENT_LOG_TRACE(
+    WLCLIENT_LOG_DEBUG(
         "Framebuffer size: content=%" PRIi32 "x%" PRIi32 ", scale=%" PRIi32 ", framebuffer=%" PRIi32 "x%" PRIi32,
         wdata->content_logical_width,
         wdata->content_logical_height,
@@ -833,6 +879,11 @@ static void apply_pending_window_state(const wlclient_window* window, wlclient_w
 
     if (wdata->pending & WLCLIENT_PENDING_BACKEND_RESIZE) {
         update_framebuffer_size(window, wdata);
+
+        // The edge positions depend on the window size, so any resize must re-issue them.
+        if (wdata->edge_border_size > 0) {
+            position_edges(wdata);
+        }
     }
 
     wdata->pending = WLCLIENT_PENDING_NONE;
@@ -846,7 +897,7 @@ static void store_new_input_device(u32 id, struct wl_seat* seat) {
     );
 
     wlclient_input_device new_device = {
-        .id = id,
+        .seat_id = id,
         .seat = seat,
         .used = true
     };
@@ -868,7 +919,7 @@ static wlclient_input_device* find_input_device_by_seat(struct wl_seat* seat) {
 
 static i32 find_input_device_index_by_id(u32 id) {
     for (i32 i = 0; i < g_input_devices_count; i++) {
-        if (g_input_devices[i].id == id) return i;
+        if (g_input_devices[i].seat_id == id) return i;
     }
     return -1;
 }
@@ -917,25 +968,40 @@ static void remove_and_destroy_input_device_by_id(i32 idx) {
 *   version   - maximum supported version of the interface
 */
 static void register_global(void* data, struct wl_registry* wl_registry, u32 id, const char* interface, u32 version) {
+    (void) data;
+
     WLCLIENT_LOG_TRACE("Register global received for interface = %s", interface);
 
     if (strcmp(interface, "wl_compositor") == 0) {
         WLCLIENT_PANIC(!g_compositor, "wl_compositor re-registered");
         u32 effective_version = WLCLIENT_MIN((u32) wl_compositor_interface.version, version);
-        // TODO: [COMPATIBILITY] - a lot of compositors support older versions, so this requirement needs to be dropped.
-        WLCLIENT_PANIC(effective_version >= 6, "required compositor version is 6");
+        WLCLIENT_PANIC(
+            effective_version >= WLCLIENT_MIN_WL_COMPOSITOR_VERSION,
+            "wl_compositor version %" PRIu32 " < required min %" PRIu32,
+            effective_version, (u32) WLCLIENT_MIN_WL_COMPOSITOR_VERSION
+        );
         g_compositor = wl_registry_bind(wl_registry, id, &wl_compositor_interface, effective_version);
     }
     else if (strcmp(interface, "wl_subcompositor") == 0) {
         WLCLIENT_PANIC(!g_subcompositor, "wl_subcompositor re-registered");
 
         u32 effective_version = WLCLIENT_MIN((u32) wl_subcompositor_interface.version, version);
+        WLCLIENT_PANIC(
+            effective_version >= WLCLIENT_MIN_WL_SUBCOMPOSITOR_VERSION,
+            "wl_subcompositor version %" PRIu32 " < required min %" PRIu32,
+            effective_version, (u32) WLCLIENT_MIN_WL_SUBCOMPOSITOR_VERSION
+        );
         g_subcompositor = wl_registry_bind(wl_registry, id, &wl_subcompositor_interface, effective_version);
     }
     else if (strcmp(interface, "xdg_wm_base") == 0) {
         WLCLIENT_PANIC(!g_xdgWmBase, "xdg_wm_base re-registered");
 
         u32 effective_version = WLCLIENT_MIN((u32) xdg_wm_base_interface.version, version);
+        WLCLIENT_PANIC(
+            effective_version >= WLCLIENT_MIN_XDG_WM_BASE_VERSION,
+            "xdg_wm_base version %" PRIu32 " < required min %" PRIu32,
+            effective_version, (u32) WLCLIENT_MIN_XDG_WM_BASE_VERSION
+        );
         g_xdgWmBase = wl_registry_bind(wl_registry, id, &xdg_wm_base_interface, effective_version);
         if (!g_xdgWmBase) return;
 
@@ -950,6 +1016,11 @@ static void register_global(void* data, struct wl_registry* wl_registry, u32 id,
         WLCLIENT_PANIC(!g_shm, "wl_shm re-registered");
 
         u32 effective_version = WLCLIENT_MIN((u32) wl_shm_interface.version, version);
+        WLCLIENT_PANIC(
+            effective_version >= WLCLIENT_MIN_WL_SHM_VERSION,
+            "wl_shm version %" PRIu32 " < required min %" PRIu32,
+            effective_version, (u32) WLCLIENT_MIN_WL_SHM_VERSION
+        );
         g_shm = wl_registry_bind(wl_registry, id, &wl_shm_interface, effective_version);
         if (!g_shm) return;
 
@@ -961,8 +1032,11 @@ static void register_global(void* data, struct wl_registry* wl_registry, u32 id,
     }
     else if (strcmp(interface, "wl_seat") == 0) {
         u32 effective_version = WLCLIENT_MIN((u32) wl_seat_interface.version, version);
-        // TODO: [COMPATIBILITY] - pointer release requires seat version above 3. Which is probably fine everywhere.
-        WLCLIENT_PANIC(effective_version >= 3, "required wl_seat version is 3");
+        WLCLIENT_PANIC(
+            effective_version >= WLCLIENT_MIN_WL_SEAT_VERSION,
+            "wl_seat version %" PRIu32 " < required min %" PRIu32,
+            effective_version, (u32) WLCLIENT_MIN_WL_SEAT_VERSION
+        );
 
         struct wl_seat* seat = wl_registry_bind(wl_registry, id, &wl_seat_interface, effective_version);
         if (!seat) return;
@@ -971,7 +1045,7 @@ static void register_global(void* data, struct wl_registry* wl_registry, u32 id,
             .capabilities = seat_capabilities,
             .name = seat_name,
         };
-        wl_seat_add_listener(seat, &listener, data);
+        wl_seat_add_listener(seat, &listener, NULL);
 
         store_new_input_device(id, seat);
     }
@@ -1061,7 +1135,7 @@ static void shm_pick_format(void *data, struct wl_shm *wl_shm, u32 format) {
 }
 
 /**
-* This signals that the compositor is done reading from the buffer and the client may reuse it.
+* This signals that the compositor is done reading from the decoration buffer and the client may reuse it.
 *
 * This happens:
 *   - after the compositor finishes displaying a committed buffer
@@ -1070,7 +1144,7 @@ static void shm_pick_format(void *data, struct wl_shm *wl_shm, u32 format) {
 *   data      - pointer to the corresponding decoration_buffer_ready_states entry
 *   wl_buffer - the wl_buffer instance being released
 */
-static void release_buffer(void *data, struct wl_buffer *wl_buffer) {
+static void decoration_release_buffer(void *data, struct wl_buffer *wl_buffer) {
     (void)wl_buffer;
 
     WLCLIENT_LOG_TRACE("Buffer released");
@@ -1252,9 +1326,50 @@ static void xdg_toplevel_configure_wm_capabilities(void* data, struct xdg_toplev
 */
 static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilities) {
     (void)data;
-    (void)wl_seat;
 
-    WLCLIENT_LOG_TRACE("Seat capabilities: %"PRIu32, capabilities);
+    WLCLIENT_LOG_DEBUG("Seat capabilities: %"PRIu32, capabilities);
+
+    wlclient_input_device* input_device = find_input_device_by_seat(wl_seat);
+
+    if (capabilities & WL_SEAT_CAPABILITY_KEYBOARD) {
+        // TODO: ...
+    }
+    else {
+        // TODO: ...
+    }
+
+    if (capabilities & WL_SEAT_CAPABILITY_POINTER) {
+        if (!input_device->pointer) {
+            input_device->pointer = wl_seat_get_pointer(input_device->seat);
+            static const struct wl_pointer_listener listener = {
+                .enter = pointer_enter,
+                .leave = pointer_leave,
+                .motion = pointer_motion,
+                .button = pointer_button,
+                .axis = pointer_axis,
+                .frame = pointer_frame,
+                .axis_source = pointer_axis_source,
+                .axis_stop = pointer_axis_stop,
+                .axis_discrete = pointer_axis_discrete,
+                .axis_value120 = pointer_axis_value120,
+                .axis_relative_direction = pointer_axis_relative_direction,
+            };
+            wl_pointer_add_listener(input_device->pointer, &listener, NULL);
+
+            WLCLIENT_LOG_DEBUG("Registered mouse for seat(id=%"PRIu32")", input_device->seat_id);
+        }
+    }
+    else {
+        if (input_device->pointer) {
+            // Mouse was unplugged (or compositor revoked the capability).
+            WLCLIENT_LOG_DEBUG("Releasing mouse for seat(id=%"PRIu32")", input_device->seat_id);
+            wl_pointer_release(input_device->pointer);
+            input_device->pointer = NULL;
+        }
+        else {
+            WLCLIENT_LOG_DEBUG("No mouse capability for seat(id=%"PRIu32")", input_device->seat_id);
+        }
+    }
 }
 
 /**
@@ -1275,4 +1390,110 @@ static void seat_name(void *data, struct wl_seat *wl_seat, const char *name) {
     WLCLIENT_LOG_TRACE("Seat name: %s", name);
     wlclient_input_device* input_device = find_input_device_by_seat(wl_seat);
     input_device->seat_name = name; // TODO: This is not safe, it needs to be a copy! Event routing might depend on this garbage..
+}
+
+// FIXME: Write comment.
+static void pointer_enter(void* data, struct wl_pointer* wl_pointer, u32 serial, struct wl_surface* surface, wl_fixed_t surface_x, wl_fixed_t surface_y) {
+    (void)data;
+    (void)wl_pointer;
+    (void)surface;
+
+    WLCLIENT_LOG_TRACE(
+        "Pointer enter: serial=%" PRIu32 ", x=%f, y=%f",
+        serial,
+        wl_fixed_to_double(surface_x),
+        wl_fixed_to_double(surface_y)
+    );
+}
+
+// FIXME: Write comment.
+static void pointer_leave(void* data, struct wl_pointer* wl_pointer, u32 serial, struct wl_surface* surface) {
+    (void)data;
+    (void)wl_pointer;
+    (void)surface;
+
+    WLCLIENT_LOG_TRACE("Pointer leave: serial=%" PRIu32, serial);
+}
+
+// FIXME: Write comment.
+static void pointer_motion(void* data, struct wl_pointer* wl_pointer, u32 time, wl_fixed_t surface_x, wl_fixed_t surface_y) {
+    (void)data;
+    (void)wl_pointer;
+
+    WLCLIENT_LOG_TRACE(
+        "Pointer motion: time=%" PRIu32 ", x=%f, y=%f",
+        time,
+        wl_fixed_to_double(surface_x),
+        wl_fixed_to_double(surface_y)
+    );
+}
+
+// FIXME: Write comment.
+static void pointer_button(void* data, struct wl_pointer* wl_pointer, u32 serial, u32 time, u32 button, u32 state) {
+    (void)data;
+    (void)wl_pointer;
+
+    WLCLIENT_LOG_TRACE(
+        "Pointer button: serial=%" PRIu32 ", time=%" PRIu32 ", button=%" PRIu32 ", state=%" PRIu32,
+        serial, time, button, state
+    );
+}
+
+// FIXME: Write comment.
+static void pointer_axis(void* data, struct wl_pointer* wl_pointer, u32 time, u32 axis, wl_fixed_t value) {
+    (void)data;
+    (void)wl_pointer;
+
+    WLCLIENT_LOG_TRACE(
+        "Pointer axis: time=%" PRIu32 ", axis=%" PRIu32 ", value=%f",
+        time, axis, wl_fixed_to_double(value)
+    );
+}
+
+// FIXME: Write comment.
+static void pointer_frame(void* data, struct wl_pointer* wl_pointer) {
+    (void)data;
+    (void)wl_pointer;
+
+    WLCLIENT_LOG_TRACE("Pointer frame");
+}
+
+// FIXME: Write comment.
+static void pointer_axis_source(void* data, struct wl_pointer* wl_pointer, u32 axis_source) {
+    (void)data;
+    (void)wl_pointer;
+
+    WLCLIENT_LOG_TRACE("Pointer axis source: %" PRIu32, axis_source);
+}
+
+// FIXME: Write comment.
+static void pointer_axis_stop(void* data, struct wl_pointer* wl_pointer, u32 time, u32 axis) {
+    (void)data;
+    (void)wl_pointer;
+
+    WLCLIENT_LOG_TRACE("Pointer axis stop: time=%" PRIu32 ", axis=%" PRIu32, time, axis);
+}
+
+// FIXME: Write comment.
+static void pointer_axis_discrete(void* data, struct wl_pointer* wl_pointer, u32 axis, i32 discrete) {
+    (void)data;
+    (void)wl_pointer;
+
+    WLCLIENT_LOG_TRACE("Pointer axis discrete: axis=%" PRIu32 ", discrete=%" PRIi32, axis, discrete);
+}
+
+// FIXME: Write comment.
+static void pointer_axis_value120(void* data, struct wl_pointer* wl_pointer, u32 axis, i32 value120) {
+    (void)data;
+    (void)wl_pointer;
+
+    WLCLIENT_LOG_TRACE("Pointer axis value120: axis=%" PRIu32 ", value120=%" PRIi32, axis, value120);
+}
+
+// FIXME: Write comment.
+static void pointer_axis_relative_direction(void* data, struct wl_pointer* wl_pointer, u32 axis, u32 direction) {
+    (void)data;
+    (void)wl_pointer;
+
+    WLCLIENT_LOG_TRACE("Pointer axis relative direction: axis=%" PRIu32 ", direction=%" PRIu32, axis, direction);
 }
