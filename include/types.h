@@ -104,8 +104,8 @@ typedef struct wlclient_global_state {
     wlclient_window_data windows[WLCLIENT_WINDOWS_COUNT];
 
     // State for input devices.
-    struct wlclient_input_device input_device[WLCLIENT_MAX_INPUT_DEVICES];
-    i32 input_device_count;
+    struct wlclient_input_device input_devices[WLCLIENT_MAX_INPUT_DEVICES];
+    i32 input_devices_count;
 
     // Backend hooks.
     void (*backend_shutdown)(void);

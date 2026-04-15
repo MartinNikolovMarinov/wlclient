@@ -3,8 +3,7 @@
 i32 run_all_tests(void) {
     UNITY_BEGIN();
 
-    RUN_TEST(basic_wlclient_init);
-    RUN_TEST(basic_wlclient_shutdown_with_no_init);
+    basic_tests();
 
     return UNITY_END();
 }
