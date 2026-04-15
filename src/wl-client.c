@@ -1,9 +1,12 @@
+#define _GNU_SOURCE
+
 #include "wl-client.h"
 #include "debug.h"
 #include "macro_magic.h"
 
 #include <string.h>
 
+#include "types.h"
 #include "xdg-shell-client-protocol.h"
 #include <wayland-client-core.h>
 #include <wayland-client-protocol.h>
@@ -23,6 +26,8 @@ static wlclient_global_state g_state;
 // Helper Declarations
 //======================================================================================================================
 
+static void set_allocator(wlclient_allocator* allocator);
+
 static void destroy_all_input_devices(void);
 static void destroy_input_device(wlclient_input_device* input_device);
 
@@ -41,8 +46,10 @@ static void xdg_wm_base_ping(void* data, struct xdg_wm_base* xdg_wm_base, u32 se
 // PUBLIC
 //======================================================================================================================
 
-wlclient_error_code wlclient_init(void) {
+wlclient_error_code wlclient_init(wlclient_allocator* allocator) {
     WLCLIENT_LOG_INFO("Initializing...");
+
+    set_allocator(allocator);
 
     i32 ret = 0;
 
@@ -130,6 +137,11 @@ void _wlclient_set_backend_resize_window(void (*resize_window)(const wlclient_wi
 //======================================================================================================================
 // Helper Implementations
 //======================================================================================================================
+
+static void set_allocator(wlclient_allocator* allocator) {
+    g_state.allocator.alloc = allocator && allocator->alloc ? allocator->alloc : malloc;
+    g_state.allocator.strdup = allocator && allocator->strdup ? allocator->strdup : strdup;
+}
 
 static void destroy_all_input_devices(void) {
     WLCLIENT_LOG_INFO("Destroying all input devices...");

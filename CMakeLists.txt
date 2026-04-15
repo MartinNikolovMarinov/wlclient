@@ -5,6 +5,7 @@ project(wlclient VERSION 0.1.0 LANGUAGES C)
 
 set(target_wlclient wlclient)
 set(target_sandbox sandbox)
+set(target_test tests)
 
 # Standard Requirements
 
@@ -48,9 +49,10 @@ else()
 endif()
 
 option(WLCLIENT_USE_LOGGING "Use ANSI escape codes in logging." OFF)
-option(WLCLIENT_BUILD_SANDBOX "Build sandbox test code." OFF)
 option(WLCLIENT_LIBRARY_SHARED "Build as shared library." OFF)
 option(WLCLIENT_ASSERT_ENABLED "Enable asserts." OFF)
+option(WLCLIENT_BUILD_SANDBOX "Build sandbox executable." OFF)
+option(WLCLIENT_BUILD_TESTS "Build test executable." OFF)
 
 # Print Selected Options:
 
@@ -66,6 +68,7 @@ log_info("Shared:            ${WLCLIENT_LIBRARY_SHARED}")
 log_info("Backend:           ${WLCLIENT_BACKEND}")
 log_info("Use logging:       ${WLCLIENT_USE_LOGGING}")
 log_info("Build Sandbox:     ${WLCLIENT_BUILD_SANDBOX}")
+log_info("Build Tests:       ${WLCLIENT_BUILD_TESTS}")
 log_info("---------------------------------------------")
 
 # ---------------------------------------- End Options -----------------------------------------------------------------
@@ -86,6 +89,12 @@ endif()
 
 set(src_sandbox
     sandbox.c
+)
+
+set(src_test
+    tests/unity/unity.c
+
+    tests/test_main.c
 )
 
 # ---------------------------------------- End Declare Source Files ----------------------------------------------------
@@ -135,6 +144,18 @@ if (WLCLIENT_BUILD_SANDBOX)
     wlclient_target_set_default_c_flags(${target_sandbox} ${WLCLIENT_DEBUG} false)
     target_link_libraries(${target_sandbox} PUBLIC ${target_wlclient})
     target_link_libraries(${target_sandbox} PRIVATE wayland-egl EGL GLESv2)
+endif()
+
+if (WLCLIENT_BUILD_TESTS)
+    add_executable(${target_test} ${src_test})
+    wlclient_target_set_default_c_flags(${target_test} ${WLCLIENT_DEBUG} false)
+    target_link_libraries(${target_test} PUBLIC ${target_wlclient})
+    target_link_libraries(${target_test} PRIVATE wayland-egl EGL GLESv2)
+
+    target_include_directories(${target_test} PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/unity
+    )
 endif()
 
 # ---------------------------------------- END Create Executables ------------------------------------------------------

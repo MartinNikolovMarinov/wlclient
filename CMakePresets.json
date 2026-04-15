@@ -7,6 +7,8 @@
 			"binaryDir": "${sourceDir}/build",
 			"cacheVariables": {
 				"WLCLIENT_ASSERT_ENABLED": "ON",
+				"WLCLIENT_BUILD_TESTS": "ON",
+				"WLCLIENT_BUILD_SANDBOX": "ON",
 				"WLCLIENT_BACKEND": "EGL"
 			}
 		},
@@ -17,7 +19,6 @@
 			"cacheVariables": {
 				"CMAKE_BUILD_TYPE": "Debug",
 				"WLCLIENT_LIBRARY_SHARED": "ON",
-				"WLCLIENT_BUILD_SANDBOX": "ON",
 				"WLCLIENT_USE_LOGGING": "ON"
 			}
 		},
@@ -28,7 +29,6 @@
 			"cacheVariables": {
 				"CMAKE_BUILD_TYPE": "Release",
 				"WLCLIENT_LIBRARY_SHARED": "OFF",
-				"WLCLIENT_BUILD_SANDBOX": "ON",
 				"WLCLIENT_USE_LOGGING": "OFF"
 			}
 		},

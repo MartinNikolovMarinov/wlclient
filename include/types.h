@@ -57,6 +57,11 @@ typedef enum wlclient_error_code {
     WLCLIENT_ERROR_SENTINEL
 } wlclient_error_code;
 
+typedef struct wlclient_allocator {
+    void* (*alloc)(usize size);
+    char* (*strdup)(const char*);
+} wlclient_allocator;
+
 typedef struct wlclient_input_device {
     bool used;
     u32 seat_id;
@@ -76,6 +81,8 @@ typedef struct wlclient_window_data {
 } wlclient_window_data;
 
 typedef struct wlclient_global_state {
+    wlclient_allocator allocator;
+
     // The object thar represents a client connection to a Wayland compositor.
     struct wl_display* display;
     // The registry object is the compositor’s global object list. Exposes all global interfaces provided by the compositor.

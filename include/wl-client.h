@@ -7,7 +7,7 @@
 // PUBLIC
 //======================================================================================================================
 
-WLCLIENT_API_EXPORT wlclient_error_code wlclient_init(void);
+WLCLIENT_API_EXPORT wlclient_error_code wlclient_init(wlclient_allocator* allocator);
 WLCLIENT_API_EXPORT void wlclient_shutdown(void);
 
 WLCLIENT_API_EXPORT void wlclient_destroy_window(wlclient_window* window);
