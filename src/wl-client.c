@@ -9,54 +9,15 @@
 #include <wayland-client-protocol.h>
 #include <wayland-util.h>
 
-#define ENSURE_OR_GOTO_ERR(expr)                                               \
-do {                                                                           \
-    if (!(expr)) {                                                             \
-        _wlclient_report_wayland_fatal(g_display, #expr, __FILE__, __LINE__);  \
-        goto error;                                                            \
-    }                                                                          \
+#define ENSURE_OR_GOTO_ERR(expr)                                                    \
+do {                                                                                \
+    if (!(expr)) {                                                                  \
+        _wlclient_report_wayland_fatal(g_state.display, #expr, __FILE__, __LINE__); \
+        goto error;                                                                 \
+    }                                                                               \
 } while(0)
 
-#define WLCLIENT_MAX_INPUT_DEVICES 5
-
-typedef struct wlclient_input_device {
-    bool used;
-    u32 seat_id;
-    u32 capabilities;
-    struct wl_seat* seat;
-    char* seat_name;
-    struct wl_pointer* pointer;
-    struct wl_keyboard* keyboard;
-} wlclient_input_device;
-
-// A wl_display object represents a client connection to a Wayland compositor.
-static struct wl_display* g_display = NULL;
-// The registry object is the compositor’s global object list. Exposes all global interfaces provided by the compositor.
-static struct wl_registry* g_registry = NULL;
-// The XDG WM base is the entry point for creating desktop-style windows in Wayland.
-static struct xdg_wm_base* g_xdgWmBase = NULL;
-
-// The compositor is the factory interface for creating surfaces and regions.
-static struct wl_compositor* g_compositor = NULL;
-// The global interface exposing sub-surface compositing capabilities. This is needed for the decoration subsurface.
-static struct wl_subcompositor* g_subcompositor = NULL;
-
-// A singleton global object that provides support for shared memory.
-static struct wl_shm* g_shm = NULL;
-// The preferred pixel format for software rendering.
-static i32 g_preffered_pixel_format = -1;
-
-// State for all the open windows.
-static wlclient_window_data g_windows[WLCLIENT_WINDOWS_COUNT] = {0};
-
-// State for input devices.
-static struct wlclient_input_device g_input_device[WLCLIENT_MAX_INPUT_DEVICES] = {0};
-i32 g_input_device_count = 0;
-
-// Backend hooks:
-static void (*wlclient_backend_shutdown)(void);
-static void (*wlclient_backend_destroy_window)(const wlclient_window* window);
-static void (*wlclient_backend_resize_window)(const wlclient_window* window, i32 framebuffer_width, i32 framebuffer_height);
+static wlclient_global_state g_state;
 
 //======================================================================================================================
 // Helper Declarations
@@ -85,34 +46,34 @@ wlclient_error_code wlclient_init(void) {
 
     i32 ret = 0;
 
-    g_display = wl_display_connect(NULL);
-    if (!g_display) {
+    g_state.display = wl_display_connect(NULL);
+    if (!g_state.display) {
         WLCLIENT_LOG_FATAL("Failed to connect to display");
         return WLCLIENT_ERROR_INIT_FAILED;
     }
 
     // Setup the global registry
     {
-        g_registry = wl_display_get_registry(g_display);
-        ENSURE_OR_GOTO_ERR(g_registry);
+        g_state.registry = wl_display_get_registry(g_state.display);
+        ENSURE_OR_GOTO_ERR(g_state.registry);
 
         const static struct wl_registry_listener registry_listener = {
             .global = register_global,
             .global_remove = register_global_remove,
         };
-        ret = wl_registry_add_listener(g_registry, &registry_listener, NULL);
+        ret = wl_registry_add_listener(g_state.registry, &registry_listener, NULL);
         ENSURE_OR_GOTO_ERR(ret == 0);
 
         // Block until all pending request to discover globals are processed.
-        ret = wl_display_roundtrip(g_display);
+        ret = wl_display_roundtrip(g_state.display);
         ENSURE_OR_GOTO_ERR(ret >= 0);
     }
 
     // Verify all necessary globals are registered.
-    ENSURE_OR_GOTO_ERR(g_compositor);
-    ENSURE_OR_GOTO_ERR(g_subcompositor);
-    ENSURE_OR_GOTO_ERR(g_xdgWmBase);
-    ENSURE_OR_GOTO_ERR(g_shm);
+    ENSURE_OR_GOTO_ERR(g_state.compositor);
+    ENSURE_OR_GOTO_ERR(g_state.subcompositor);
+    ENSURE_OR_GOTO_ERR(g_state.xdgWmBase);
+    ENSURE_OR_GOTO_ERR(g_state.shm);
 
     WLCLIENT_LOG_INFO("Initialization done");
     return WLCLIENT_ERROR_OK;
@@ -125,64 +86,45 @@ error:
 void wlclient_shutdown(void) {
     WLCLIENT_LOG_INFO("Shutting down...");
 
-    // FIXME: Don't forget this!
-    // for (i32 i = 0; i < WLCLIENT_WINDOWS_COUNT; i++) {
-    //     if (g_windows[i].used) {
-    //         wlclient_window window = { .id = i };
-    //         wlclient_destroy_window(&window);
-    //     }
-    // }
-
-    wlclient_backend_destroy_window = NULL;
-    wlclient_backend_resize_window = NULL;
-
-    if (wlclient_backend_shutdown) {
-        wlclient_backend_shutdown();
-        wlclient_backend_shutdown = NULL;
-    }
+    if (g_state.backend_shutdown) g_state.backend_shutdown();
 
     destroy_all_input_devices();
 
-    if (g_compositor) wl_compositor_destroy(g_compositor);
-    if (g_subcompositor) wl_subcompositor_destroy(g_subcompositor);
-    if (g_xdgWmBase) xdg_wm_base_destroy(g_xdgWmBase);
-    if (g_shm) wl_shm_destroy(g_shm);
-    if (g_registry) wl_registry_destroy(g_registry);
-    if (g_display) wl_display_disconnect(g_display);
+    if (g_state.compositor) wl_compositor_destroy(g_state.compositor);
+    if (g_state.subcompositor) wl_subcompositor_destroy(g_state.subcompositor);
+    if (g_state.xdgWmBase) xdg_wm_base_destroy(g_state.xdgWmBase);
+    if (g_state.shm) wl_shm_destroy(g_state.shm);
+    if (g_state.registry) wl_registry_destroy(g_state.registry);
+    if (g_state.display) wl_display_disconnect(g_state.display);
 
-    g_compositor = NULL;
-    g_subcompositor = NULL;
-    g_xdgWmBase = NULL;
-    g_shm = NULL;
-    g_preffered_pixel_format = -1;
-    g_registry = NULL;
-    g_display = NULL;
+    memset(&g_state, 0, sizeof(g_state));
+    g_state.preffered_pixel_format = -1;
 
     WLCLIENT_LOG_INFO("Shutdown done");
 }
 
-struct wl_display* wlclient_get_wl_display(void) {
-    WLCLIENT_ASSERT(g_display, "display is null");
-    return g_display;
+struct wl_display* _wlclient_get_wl_display(void) {
+    WLCLIENT_ASSERT(g_state.display, "display is null");
+    return g_state.display;
 }
 
 wlclient_window_data* wlclient_get_wl_window_data(const wlclient_window* window) {
     WLCLIENT_ASSERT(window && window->id >= 0 && window->id < WLCLIENT_WINDOWS_COUNT, "Invalid window argument");
-    wlclient_window_data* ret = &g_windows[window->id];
+    wlclient_window_data* ret = &g_state.windows[window->id];
     WLCLIENT_ASSERT(ret->used, "Window is marked as unused");
     return ret;
 }
 
-void wlclient_set_backend_shutdown(void (*shutdown)(void)) {
-    wlclient_backend_shutdown = shutdown;
+void _wlclient_set_backend_shutdown(void (*shutdown)(void)) {
+    g_state.backend_shutdown = shutdown;
 }
 
-void wlclient_set_backend_destroy_window(void (*destroy_window)(const wlclient_window* window)) {
-    wlclient_backend_destroy_window = destroy_window;
+void _wlclient_set_backend_destroy_window(void (*destroy_window)(const wlclient_window* window)) {
+    g_state.backend_destroy_window = destroy_window;
 }
 
-void wlclient_set_backend_resize_window(void (*resize_window)(const wlclient_window* window, i32 framebuffer_width, i32 framebuffer_height)) {
-    wlclient_backend_resize_window = resize_window;
+void _wlclient_set_backend_resize_window(void (*resize_window)(const wlclient_window* window, i32 framebuffer_width, i32 framebuffer_height)) {
+    g_state.backend_resize_window = resize_window;
 }
 
 //======================================================================================================================
@@ -192,12 +134,12 @@ void wlclient_set_backend_resize_window(void (*resize_window)(const wlclient_win
 static void destroy_all_input_devices(void) {
     WLCLIENT_LOG_INFO("Destroying all input devices...");
 
-    for (i32 i = 0; i < g_input_device_count; i++) {
-        struct wlclient_input_device* input_device = &g_input_device[i];
+    for (i32 i = 0; i < g_state.input_device_count; i++) {
+        struct wlclient_input_device* input_device = &g_state.input_device[i];
         destroy_input_device(input_device);
     }
 
-    g_input_device_count = 0;
+    g_state.input_device_count = 0;
 
     WLCLIENT_LOG_INFO("Input devices destroyed");
 }
@@ -237,39 +179,39 @@ static void register_global(void* data, struct wl_registry* wl_registry, u32 id,
     WLCLIENT_LOG_TRACE("Register global received for interface = %s", interface);
 
     if (strcmp(interface, "wl_compositor") == 0) {
-        WLCLIENT_PANIC(!g_compositor, "wl_compositor re-registered");
+        WLCLIENT_PANIC(!g_state.compositor, "wl_compositor re-registered");
         u32 effective_version = WLCLIENT_MIN((u32) wl_compositor_interface.version, version);
-        g_compositor = wl_registry_bind(wl_registry, id, &wl_compositor_interface, effective_version);
+        g_state.compositor = wl_registry_bind(wl_registry, id, &wl_compositor_interface, effective_version);
     }
     else if (strcmp(interface, "wl_subcompositor") == 0) {
-        WLCLIENT_PANIC(!g_subcompositor, "wl_subcompositor re-registered");
+        WLCLIENT_PANIC(!g_state.subcompositor, "wl_subcompositor re-registered");
         u32 effective_version = WLCLIENT_MIN((u32) wl_subcompositor_interface.version, version);
-        g_subcompositor = wl_registry_bind(wl_registry, id, &wl_subcompositor_interface, effective_version);
+        g_state.subcompositor = wl_registry_bind(wl_registry, id, &wl_subcompositor_interface, effective_version);
     }
     else if (strcmp(interface, "xdg_wm_base") == 0) {
-        WLCLIENT_PANIC(!g_xdgWmBase, "xdg_wm_base re-registered");
+        WLCLIENT_PANIC(!g_state.xdgWmBase, "xdg_wm_base re-registered");
         u32 effective_version = WLCLIENT_MIN((u32) xdg_wm_base_interface.version, version);
-        g_xdgWmBase = wl_registry_bind(wl_registry, id, &xdg_wm_base_interface, effective_version);
-        if (!g_xdgWmBase) return;
+        g_state.xdgWmBase = wl_registry_bind(wl_registry, id, &xdg_wm_base_interface, effective_version);
+        if (!g_state.xdgWmBase) return;
 
         // Setup ping handler
         static const struct xdg_wm_base_listener listender = {
             .ping = xdg_wm_base_ping
         };
-        i32 ret = xdg_wm_base_add_listener(g_xdgWmBase, &listender, NULL);
+        i32 ret = xdg_wm_base_add_listener(g_state.xdgWmBase, &listender, NULL);
         WLCLIENT_PANIC(ret == 0, "failed to setup xdg base ping listener");
     }
     else if (strcmp(interface, "wl_shm") == 0) {
-        WLCLIENT_PANIC(!g_shm, "wl_shm re-registered");
+        WLCLIENT_PANIC(!g_state.shm, "wl_shm re-registered");
 
         u32 effective_version = WLCLIENT_MIN((u32) wl_shm_interface.version, version);
-        g_shm = wl_registry_bind(wl_registry, id, &wl_shm_interface, effective_version);
-        if (!g_shm) return;
+        g_state.shm = wl_registry_bind(wl_registry, id, &wl_shm_interface, effective_version);
+        if (!g_state.shm) return;
 
         static const struct wl_shm_listener listener = {
             .format = shm_pick_format
         };
-        i32 ret = wl_shm_add_listener(g_shm, &listener, NULL);
+        i32 ret = wl_shm_add_listener(g_state.shm, &listener, NULL);
         WLCLIENT_PANIC(ret == 0, "failed to setup shm format listener");
     }
 }
@@ -312,7 +254,7 @@ static void shm_pick_format(void *data, struct wl_shm *wl_shm, u32 format) {
     // The spec states that ARGB8888 and XRGB8888 should be supported by all renderers, so it is safe to just pick
     // ARGB8888 and never bother with anything else.
     if (format == WL_SHM_FORMAT_ARGB8888) {
-        g_preffered_pixel_format = (i32) WL_SHM_FORMAT_ARGB8888;
+        g_state.preffered_pixel_format = (i32) WL_SHM_FORMAT_ARGB8888;
         WLCLIENT_LOG_DEBUG("Pixel format set to %" PRIu32, format);
     }
 }
