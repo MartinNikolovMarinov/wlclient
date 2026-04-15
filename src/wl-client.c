@@ -9,6 +9,14 @@
 #include <wayland-client-protocol.h>
 #include <wayland-util.h>
 
+#define ENSURE_OR_GOTO_ERR(expr)                                               \
+do {                                                                           \
+    if (!(expr)) {                                                             \
+        _wlclient_report_wayland_fatal(g_display, #expr, __FILE__, __LINE__);  \
+        goto error;                                                            \
+    }                                                                          \
+} while(0)
+
 #define WLCLIENT_MAX_SEATS 5
 
 typedef struct wlclient_input_state {
@@ -75,32 +83,33 @@ wlclient_error_code wlclient_init(void) {
     i32 ret = 0;
 
     g_display = wl_display_connect(NULL);
-    if (!g_display) goto error;
+    if (!g_display) {
+        WLCLIENT_LOG_FATAL("Failed to connect to display");
+        return WLCLIENT_ERROR_INIT_FAILED;
+    }
 
     // Setup the global registry
     {
         g_registry = wl_display_get_registry(g_display);
-        if (!g_registry) goto error;
+        ENSURE_OR_GOTO_ERR(g_registry);
 
         const static struct wl_registry_listener registry_listener = {
             .global = register_global,
             .global_remove = register_global_remove,
         };
         ret = wl_registry_add_listener(g_registry, &registry_listener, NULL);
-        if (ret != 0) goto error;
+        ENSURE_OR_GOTO_ERR(ret == 0);
 
         // Block until all pending request to discover globals are processed.
         ret = wl_display_roundtrip(g_display);
-        if (ret < 0) goto error;
-
-        WLCLIENT_LOG_DEBUG("Registry initialized");
+        ENSURE_OR_GOTO_ERR(ret >= 0);
     }
 
     // Verify all necessary globals are registered.
-    if (!g_compositor) goto error;
-    if (!g_subcompositor) goto error;
-    if (!g_xdgWmBase) goto error;
-    if (!g_shm) goto error;
+    ENSURE_OR_GOTO_ERR(g_compositor);
+    ENSURE_OR_GOTO_ERR(g_subcompositor);
+    ENSURE_OR_GOTO_ERR(g_xdgWmBase);
+    ENSURE_OR_GOTO_ERR(g_shm);
 
     WLCLIENT_LOG_INFO("Initialization done");
     return WLCLIENT_ERROR_OK;
@@ -112,6 +121,38 @@ error:
 
 void wlclient_shutdown(void) {
     WLCLIENT_LOG_INFO("Shutting down...");
+
+    // for (i32 i = 0; i < WLCLIENT_WINDOWS_COUNT; i++) {
+    //     if (g_windows[i].used) {
+    //         wlclient_window window = { .id = i };
+    //         wlclient_destroy_window(&window);
+    //     }
+    // }
+
+    wlclient_backend_destroy_window = NULL;
+    wlclient_backend_resize_window = NULL;
+
+    if (wlclient_backend_shutdown) {
+        wlclient_backend_shutdown();
+        wlclient_backend_shutdown = NULL;
+    }
+
+    // destroy_all_input_devices();
+
+    if (g_compositor) wl_compositor_destroy(g_compositor);
+    if (g_subcompositor) wl_subcompositor_destroy(g_subcompositor);
+    if (g_xdgWmBase) xdg_wm_base_destroy(g_xdgWmBase);
+    if (g_shm) wl_shm_destroy(g_shm);
+    if (g_registry) wl_registry_destroy(g_registry);
+    if (g_display) wl_display_disconnect(g_display);
+
+    g_compositor = NULL;
+    g_subcompositor = NULL;
+    g_xdgWmBase = NULL;
+    g_shm = NULL;
+    g_preffered_pixel_format = -1;
+    g_registry = NULL;
+    g_display = NULL;
 
     WLCLIENT_LOG_INFO("Shutdown done");
 }

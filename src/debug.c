@@ -3,6 +3,10 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <wayland-client-core.h>
 
 static wlclient_log_level g_log_level = WLCLIENT_LOG_LEVEL_INFO;
 static i32 g_log_use_ansi = 1;
@@ -63,8 +67,6 @@ void _wlclient_log_message(
     const char* format,
     ...
 ) {
-    va_list args;
-
     if (level < g_log_level) {
         return;
     }
@@ -83,9 +85,60 @@ void _wlclient_log_message(
         fprintf(stdout, "[%s] %s() -- ", wlclient_log_level_name(level), function_name);
     }
 
+    va_list args;
     va_start(args, format);
     vfprintf(stdout, format, args);
     va_end(args);
 
     fputc('\n', stdout);
+}
+
+void _wlclient_report_wayland_fatal(
+    struct wl_display* wl_display,
+    const char* expr_str,
+    const char* file_name,
+    i32 line_number
+) {
+    i32 err = 0;
+    u32 protocol_err_id = 0;
+    u32 protocol_err_code = 0;
+    const struct wl_interface *iface = NULL;
+
+    err = wl_display_get_error(wl_display);
+    if (err) {
+        protocol_err_code = wl_display_get_protocol_error(wl_display, &iface, &protocol_err_id);
+    }
+
+    const char* failed_str = g_log_use_ansi
+        ? ANSI_BOLD(ANSI_BRIGHT_WHITE(ANSI_BACKGROUND_RED("[FAILED]")))
+        : "[FAILED]";
+    fprintf(stderr, "%s expr='%s' at %s:%d", failed_str, expr_str, file_name, line_number);
+
+    if (err) {
+        fprintf(stderr, " | wayland: errno=%"PRIi32 " (%s)", err, strerror(err));
+
+        if (iface) {
+            fprintf(
+                stderr,
+                ", protocol: iface=%s id=%"PRIu32" code=%"PRIu32,
+                iface->name, protocol_err_id, protocol_err_code
+            );
+        }
+        else {
+            fprintf(stderr, ", protocol: <none>");
+        }
+    }
+
+    fputc('\n', stderr);
+}
+
+void _wlclient_report_fatal(
+    const char* expr_str,
+    const char* file_name,
+    i32 line_number
+) {
+    const char* failed_str = g_log_use_ansi
+        ? ANSI_BOLD(ANSI_BRIGHT_WHITE(ANSI_BACKGROUND_RED("[ASSERTION]")))
+        : "[ASSERTION]";
+    fprintf(stderr, "%s expr='%s' at %s:%d\n", failed_str, expr_str, file_name, line_number);
 }

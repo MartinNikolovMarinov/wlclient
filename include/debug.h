@@ -6,7 +6,7 @@
 
 #include <stdlib.h> // IWYU pragma: keep
 
-// TODO: [ERROR_DIAGNOSTICS] I need some better diagnostics for error handling. It should work as a stack trace.
+struct wl_display;
 
 typedef enum wlclient_log_level {
     WLCLIENT_LOG_LEVEL_TRACE = 0,
@@ -38,14 +38,29 @@ WLCLIENT_API_INTERNAL void _wlclient_log_message(
 #define WLCLIENT_LOG_ERR(format, ...)   _wlclient_log_message(WLCLIENT_LOG_LEVEL_ERROR, __func__, format, ##__VA_ARGS__)
 #define WLCLIENT_LOG_FATAL(format, ...) _wlclient_log_message(WLCLIENT_LOG_LEVEL_FATAL, __func__, format, ##__VA_ARGS__)
 
+WLCLIENT_API_INTERNAL void _wlclient_report_wayland_fatal(
+    struct wl_display* wl_display,
+    const char* expr_str,
+    const char* file_name,
+    i32 line_number
+);
+
+WLCLIENT_API_INTERNAL void _wlclient_report_fatal(
+    const char* expr_str,
+    const char* file_name,
+    i32 line_number
+);
+
 #if defined(WLCLIENT_ASSERT_ENABLED) && WLCLIENT_ASSERT_ENABLED == 1
 
-#define WLCLIENT_ASSERT(expr, ...)      \
-do {                                    \
-    if (!(expr)) {                      \
-        abort();                        \
-    }                                   \
-}                                       \
+#define WLCLIENT_ASSERT(expr, ...)                                                \
+do {                                                                              \
+    if (!(expr)) {                                                                \
+        _wlclient_log_message(WLCLIENT_LOG_LEVEL_FATAL, __func__, ##__VA_ARGS__); \
+        _wlclient_report_fatal(#expr, __FILE__, __LINE__);                        \
+        abort();                                                                  \
+    }                                                                             \
+}                                                                                 \
 while(0)
 
 #else
@@ -54,10 +69,12 @@ while(0)
 
 #endif
 
-#define WLCLIENT_PANIC(expr, ...)       \
-do {                                    \
-    if (!(expr)) {                      \
-        abort();                        \
-    }                                   \
-}                                       \
+#define WLCLIENT_PANIC(expr, ...)                                                 \
+do {                                                                              \
+    if (!(expr)) {                                                                \
+        _wlclient_log_message(WLCLIENT_LOG_LEVEL_FATAL, __func__, ##__VA_ARGS__); \
+        _wlclient_report_fatal(#expr, __FILE__, __LINE__);                        \
+        abort();                                                                  \
+    }                                                                             \
+}                                                                                 \
 while(0)
