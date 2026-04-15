@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(wlclient VERSION 0.0.1 LANGUAGES C)
+project(wlclient VERSION 0.1.0 LANGUAGES C)
 
 # TODO: Add option to include everything into a single header STB type library.
 
