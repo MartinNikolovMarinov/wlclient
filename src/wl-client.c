@@ -21,6 +21,8 @@ do {                                                                            
     }                                                                               \
 } while(0)
 
+#define WLCLIENT_SHM_REQUIRED_VERSION 1
+
 static wlclient_global_state g_state;
 
 //======================================================================================================================
@@ -32,6 +34,8 @@ static void set_allocator(wlclient_allocator* allocator);
 static void destroy_all_input_devices(void);
 static void destroy_input_device(wlclient_input_device* input_device);
 static void destroy_input_device_seat(wlclient_input_device* input_device);
+static void destroy_input_device_pointer(wlclient_input_device* input_device);
+static void destroy_input_device_keyboard(wlclient_input_device* input_device);
 
 static void store_new_input_device(u32 id, struct wl_seat* seat, u32 seat_version);
 static wlclient_input_device* find_input_device_by_seat(struct wl_seat* seat);
@@ -117,14 +121,19 @@ wlclient_error_code wlclient_init(wlclient_allocator* allocator) {
 
     // Verify device inputs are configured correctly:
     {
-        ENSURE_OR_GOTO_ERR(g_state.input_devices_count > 0);
+        if (g_state.input_devices_count == 0) {
+            WLCLIENT_LOG_WARN("No input devices detected");
+        }
+
         for (i32 i = 0; i < g_state.input_devices_count; i++) {
             wlclient_input_device* d = &g_state.input_devices[i];
             ENSURE_OR_GOTO_ERR(d->used);
             ENSURE_OR_GOTO_ERR(d->seat);
             ENSURE_OR_GOTO_ERR(d->seat_id);
-            ENSURE_OR_GOTO_ERR(d->pointer);
-            ENSURE_OR_GOTO_ERR(d->keyboard);
+
+            // Technically a mouse and keyboard may have not been plugged in.
+            // ENSURE_OR_GOTO_ERR(d->pointer);
+            // ENSURE_OR_GOTO_ERR(d->keyboard);
         }
     }
 
@@ -148,10 +157,17 @@ void wlclient_shutdown(void) {
     if (g_state.xdgWmBase) xdg_wm_base_destroy(g_state.xdgWmBase);
     if (g_state.shm) wl_shm_destroy(g_state.shm);
     if (g_state.registry) wl_registry_destroy(g_state.registry);
-    if (g_state.display) wl_display_disconnect(g_state.display);
+
+    if (g_state.display) {
+        // Flush the pending destory requests before disconnecting.
+        i32 ret = wl_display_flush(g_state.display);
+        WLCLIENT_ASSERT(ret >= 0, "Failed to flush on shutdown");
+        wl_display_disconnect(g_state.display);
+    }
 
     memset(&g_state, 0, sizeof(g_state));
     g_state.preffered_pixel_format = -1;
+
 
     WLCLIENT_LOG_INFO("Shutdown done");
 }
@@ -190,6 +206,7 @@ void _wlclient_set_backend_resize_window(void (*resize_window)(const wlclient_wi
 
 static void set_allocator(wlclient_allocator* allocator) {
     g_state.allocator.alloc = allocator && allocator->alloc ? allocator->alloc : malloc;
+    g_state.allocator.free = allocator && allocator->free ? allocator->free : free;
     g_state.allocator.strdup = allocator && allocator->strdup ? allocator->strdup : strdup;
 }
 
@@ -207,12 +224,10 @@ static void destroy_all_input_devices(void) {
 }
 
 static void destroy_input_device(wlclient_input_device* input_device) {
-    if (input_device->pointer)   wl_pointer_release(input_device->pointer);
-    if (input_device->keyboard)  wl_keyboard_release(input_device->keyboard);
-
+    destroy_input_device_pointer(input_device);
+    destroy_input_device_keyboard(input_device);
     destroy_input_device_seat(input_device);
 
-    // Marks the pointer as unused along with zeroing out everything else:
     memset(input_device, 0, sizeof(*input_device));
 }
 
@@ -220,16 +235,46 @@ static void destroy_input_device_seat(wlclient_input_device* input_device) {
     if (!input_device) return;
 
     if (input_device->seat_name) {
-        free(input_device->seat_name);
+        g_state.allocator.free(input_device->seat_name);
     }
 
-    if (input_device->seat_version >= 5) {
-        wl_seat_release(input_device->seat);
+    if (input_device->seat) {
+        if (input_device->seat_version >= 5)
+            wl_seat_release(input_device->seat);
+        else
+            wl_seat_destroy(input_device->seat);
     }
-    else {
-        wl_seat_destroy(input_device->seat);
-    }
+
+    input_device->seat = NULL;
+    input_device->seat_name = NULL;
 }
+
+static void destroy_input_device_pointer(wlclient_input_device* input_device) {
+    if (!input_device) return;
+
+    if (input_device->pointer) {
+        if (input_device->seat_version >= 3)
+            wl_pointer_release(input_device->pointer);
+        else
+            wl_pointer_destroy(input_device->pointer);
+    }
+
+    input_device->pointer = NULL;
+}
+
+static void destroy_input_device_keyboard(wlclient_input_device* input_device) {
+    if (!input_device) return;
+
+    if (input_device->keyboard) {
+        if (input_device->seat_version >= 3)
+            wl_keyboard_release(input_device->keyboard);
+        else
+            wl_keyboard_destroy(input_device->keyboard);
+    }
+
+    input_device->keyboard = NULL;
+}
+
 
 static void store_new_input_device(u32 id, struct wl_seat* seat, u32 seat_version) {
     WLCLIENT_PANIC(
@@ -258,6 +303,41 @@ static wlclient_input_device* find_input_device_by_seat(struct wl_seat* seat) {
 
     WLCLIENT_PANIC(false, "[BUG] Find failed; seat not registered");
     return NULL;
+}
+
+static i32 find_input_device_index_by_id(u32 id) {
+    for (i32 i = 0; i < g_state.input_devices_count; i++) {
+        if (g_state.input_devices[i].seat_id == id) return i;
+    }
+    return -1;
+}
+
+static void remove_and_destroy_input_device_by_id(i32 idx) {
+    WLCLIENT_PANIC(
+        idx >= 0 && idx < g_state.input_devices_count,
+        "[BUG] Remove failed; invalid index idx=%" PRIi32,
+        idx
+    );
+
+    wlclient_input_device* input_device = &g_state.input_devices[idx];
+
+    destroy_input_device(input_device);
+
+    if (idx == g_state.input_devices_count - 1) {
+        g_state.input_devices_count--;
+        return;
+    }
+
+    i32 last = g_state.input_devices_count - idx - 1;
+    if (last > 0) {
+        memmove(
+            &g_state.input_devices[idx],
+            &g_state.input_devices[idx + 1],
+            (usize)(last) * sizeof(*input_device)
+        );
+    }
+
+    g_state.input_devices_count--;
 }
 
 
@@ -303,17 +383,16 @@ static void register_global(void* data, struct wl_registry* wl_registry, u32 id,
         g_state.xdgWmBase = wl_registry_bind(wl_registry, id, &xdg_wm_base_interface, effective_version);
         WLCLIENT_PANIC(g_state.xdgWmBase, "failed to create xdg_wm_base");
 
-        static const struct xdg_wm_base_listener listender = {
+        static const struct xdg_wm_base_listener listener = {
             .ping = xdg_wm_base_ping
         };
-        i32 ret = xdg_wm_base_add_listener(g_state.xdgWmBase, &listender, NULL);
+        i32 ret = xdg_wm_base_add_listener(g_state.xdgWmBase, &listener, NULL);
         WLCLIENT_PANIC(ret == 0, "failed to setup xdg base ping listener");
     }
     else if (strcmp(interface, "wl_shm") == 0) {
         WLCLIENT_PANIC(!g_state.shm, "wl_shm re-registered");
 
-        u32 effective_version = WLCLIENT_MIN((u32) wl_shm_interface.version, version);
-        g_state.shm = wl_registry_bind(wl_registry, id, &wl_shm_interface, effective_version);
+        g_state.shm = wl_registry_bind(wl_registry, id, &wl_shm_interface, WLCLIENT_SHM_REQUIRED_VERSION);
         WLCLIENT_PANIC(g_state.shm, "failed to create wl_shm");
 
         static const struct wl_shm_listener listener = {
@@ -353,6 +432,11 @@ static void register_global_remove(void* data, struct wl_registry* wl_registry, 
     (void)data;
     (void)wl_registry;
     WLCLIENT_LOG_DEBUG("Removing %" PRIu32, id);
+
+    {
+        i32 idx = find_input_device_index_by_id(id);
+        if (idx >= 0) remove_and_destroy_input_device_by_id(idx);
+    }
 }
 
 /**
@@ -439,7 +523,7 @@ static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilit
         if (input_device->keyboard) {
             // Keyboard was unplugged (or compositor revoked the capability).
             WLCLIENT_LOG_DEBUG("Releasing keyboard for seat(id=%"PRIu32")", input_device->seat_id);
-            wl_keyboard_release(input_device->keyboard);
+            destroy_input_device_keyboard(input_device);
             input_device->keyboard = NULL;
         }
         else {
@@ -473,7 +557,7 @@ static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilit
         if (input_device->pointer) {
             // Mouse was unplugged (or compositor revoked the capability).
             WLCLIENT_LOG_DEBUG("Releasing mouse for seat(id=%"PRIu32")", input_device->seat_id);
-            wl_pointer_release(input_device->pointer);
+            destroy_input_device_pointer(input_device);
             input_device->pointer = NULL;
         }
         else {
@@ -498,8 +582,14 @@ static void seat_name(void *data, struct wl_seat *wl_seat, const char *name) {
     (void)data;
 
     WLCLIENT_LOG_DEBUG("Seat name: %s", name);
+
     wlclient_input_device* input_device = find_input_device_by_seat(wl_seat);
+    if (input_device->seat_name) {
+        g_state.allocator.free(input_device->seat_name);
+    }
     input_device->seat_name = g_state.allocator.strdup(name);
+
+    WLCLIENT_PANIC(input_device->seat_name, "Failed to allocate memory for the seat name");
 }
 
 

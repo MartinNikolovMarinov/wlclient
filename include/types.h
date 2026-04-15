@@ -58,6 +58,7 @@ typedef enum wlclient_error_code {
 
 typedef struct wlclient_allocator {
     void* (*alloc)(usize size);
+    void (*free)(void* addr);
     char* (*strdup)(const char*);
 } wlclient_allocator;
 

@@ -15,6 +15,7 @@ void assert_global_state_initialized() {
     wlclient_global_state* s = _wlclient_get_wl_global_state();
 
     TEST_ASSERT_NOT_NULL(s->allocator.alloc);
+    TEST_ASSERT_NOT_NULL(s->allocator.free);
     TEST_ASSERT_NOT_NULL(s->allocator.strdup);
 
     TEST_ASSERT_NOT_NULL(s->display);
@@ -30,14 +31,15 @@ void assert_global_state_initialized() {
         TEST_ASSERT_EQUAL_MEMORY(&s->windows[i], &ZEROED_OUT_GSTATE.windows[i], sizeof(s->windows[i]));
     }
 
-    // Make sure the right amount of input devices are in use:
-    TEST_ASSERT_TRUE(s->input_devices_count > 0);
+    // Make sure the that devices that are in use are configured:
+    TEST_ASSERT_TRUE(s->input_devices_count >= 0);
     for (i32 i = 0; i < s->input_devices_count; i++) {
         TEST_ASSERT_TRUE(s->input_devices[i].used);
         TEST_ASSERT_NOT_NULL(s->input_devices[i].seat);
         TEST_ASSERT_NOT_NULL(s->input_devices[i].seat_name);
-        TEST_ASSERT_NOT_NULL(s->input_devices[i].pointer);
-        TEST_ASSERT_NOT_NULL(s->input_devices[i].keyboard);
+        TEST_ASSERT_TRUE(s->input_devices[i].seat_version > 0);
+        // TEST_ASSERT_NOT_NULL(s->input_devices[i].pointer);
+        // TEST_ASSERT_NOT_NULL(s->input_devices[i].keyboard);
     }
     for (i32 i = s->input_devices_count; i < WLCLIENT_MAX_INPUT_DEVICES; i++) {
         TEST_ASSERT_EQUAL_MEMORY(&s->input_devices[i], &ZEROED_OUT_GSTATE.input_devices[i], sizeof(s->windows[i]));
