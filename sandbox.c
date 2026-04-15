@@ -4,11 +4,11 @@
 
 #include <signal.h>
 #include <stdio.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "debug.h"
 #include "types.h"
-
 #include "wl-client.h"
 
 static volatile sig_atomic_t g_running = 1;
@@ -24,15 +24,19 @@ void handle_close(void) {
 }
 
 i32 main(void) {
-    wlclient_log_set_level(WLCLIENT_LOG_LEVEL_TRACE);
+    signal(SIGINT, sigint_handler);
+    srand((u32) time(0));
 
     wlclient_error_code result_code = 0;
 
+    wlclient_log_set_level(WLCLIENT_LOG_LEVEL_DEBUG);
     result_code = wlclient_init();
-    if (result_code) {
-        return (i32) result_code;
+    if (result_code != WLCLIENT_ERROR_OK) {
+        printf("ERROR - %d\n", result_code);
+        goto done;
     }
 
+done:
     wlclient_shutdown();
-    return 0;
+    return (i32) result_code;
 }

@@ -17,9 +17,9 @@ do {                                                                           \
     }                                                                          \
 } while(0)
 
-#define WLCLIENT_MAX_SEATS 5
+#define WLCLIENT_MAX_INPUT_DEVICES 5
 
-typedef struct wlclient_input_state {
+typedef struct wlclient_input_device {
     bool used;
     u32 seat_id;
     u32 capabilities;
@@ -27,7 +27,7 @@ typedef struct wlclient_input_state {
     char* seat_name;
     struct wl_pointer* pointer;
     struct wl_keyboard* keyboard;
-} wlclient_seat_state;
+} wlclient_input_device;
 
 // A wl_display object represents a client connection to a Wayland compositor.
 static struct wl_display* g_display = NULL;
@@ -50,8 +50,8 @@ static i32 g_preffered_pixel_format = -1;
 static wlclient_window_data g_windows[WLCLIENT_WINDOWS_COUNT] = {0};
 
 // State for input devices.
-static struct wlclient_input_state g_input_state[WLCLIENT_MAX_SEATS] = {0};
-i32 g_input_state_count = 0;
+static struct wlclient_input_device g_input_device[WLCLIENT_MAX_INPUT_DEVICES] = {0};
+i32 g_input_device_count = 0;
 
 // Backend hooks:
 static void (*wlclient_backend_shutdown)(void);
@@ -61,6 +61,9 @@ static void (*wlclient_backend_resize_window)(const wlclient_window* window, i32
 //======================================================================================================================
 // Helper Declarations
 //======================================================================================================================
+
+static void destroy_all_input_devices(void);
+static void destroy_input_device(wlclient_input_device* input_device);
 
 //======================================================================================================================
 // Wayland Handlers
@@ -122,6 +125,7 @@ error:
 void wlclient_shutdown(void) {
     WLCLIENT_LOG_INFO("Shutting down...");
 
+    // FIXME: Don't forget this!
     // for (i32 i = 0; i < WLCLIENT_WINDOWS_COUNT; i++) {
     //     if (g_windows[i].used) {
     //         wlclient_window window = { .id = i };
@@ -137,7 +141,7 @@ void wlclient_shutdown(void) {
         wlclient_backend_shutdown = NULL;
     }
 
-    // destroy_all_input_devices();
+    destroy_all_input_devices();
 
     if (g_compositor) wl_compositor_destroy(g_compositor);
     if (g_subcompositor) wl_subcompositor_destroy(g_subcompositor);
@@ -155,6 +159,57 @@ void wlclient_shutdown(void) {
     g_display = NULL;
 
     WLCLIENT_LOG_INFO("Shutdown done");
+}
+
+struct wl_display* wlclient_get_wl_display(void) {
+    WLCLIENT_ASSERT(g_display, "display is null");
+    return g_display;
+}
+
+wlclient_window_data* wlclient_get_wl_window_data(const wlclient_window* window) {
+    WLCLIENT_ASSERT(window && window->id >= 0 && window->id < WLCLIENT_WINDOWS_COUNT, "Invalid window argument");
+    wlclient_window_data* ret = &g_windows[window->id];
+    WLCLIENT_ASSERT(ret->used, "Window is marked as unused");
+    return ret;
+}
+
+void wlclient_set_backend_shutdown(void (*shutdown)(void)) {
+    wlclient_backend_shutdown = shutdown;
+}
+
+void wlclient_set_backend_destroy_window(void (*destroy_window)(const wlclient_window* window)) {
+    wlclient_backend_destroy_window = destroy_window;
+}
+
+void wlclient_set_backend_resize_window(void (*resize_window)(const wlclient_window* window, i32 framebuffer_width, i32 framebuffer_height)) {
+    wlclient_backend_resize_window = resize_window;
+}
+
+//======================================================================================================================
+// Helper Implementations
+//======================================================================================================================
+
+static void destroy_all_input_devices(void) {
+    WLCLIENT_LOG_INFO("Destroying all input devices...");
+
+    for (i32 i = 0; i < g_input_device_count; i++) {
+        struct wlclient_input_device* input_device = &g_input_device[i];
+        destroy_input_device(input_device);
+    }
+
+    g_input_device_count = 0;
+
+    WLCLIENT_LOG_INFO("Input devices destroyed");
+}
+
+static void destroy_input_device(wlclient_input_device* input_device) {
+    if (input_device->pointer)   wl_pointer_release(input_device->pointer);
+    if (input_device->keyboard)  wl_keyboard_release(input_device->keyboard);
+    if (input_device->seat_name) free(input_device->seat_name);
+    if (input_device->seat)      wl_seat_destroy(input_device->seat);
+
+    // Marks the pointer as unused along with zeroing out everything else:
+    memset(input_device, 0, sizeof(*input_device));
 }
 
 //======================================================================================================================
