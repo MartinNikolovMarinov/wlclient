@@ -328,6 +328,8 @@ error:
 }
 
 void wlclient_destroy_window(wlclient_window* window) {
+    if (!window || window->id < 0) return;
+
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
 
     WLCLIENT_LOG_DEBUG("Destroying window with id=%" PRIi32 "...", window->id);
