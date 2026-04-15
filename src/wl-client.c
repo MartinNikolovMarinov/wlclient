@@ -7,10 +7,10 @@
 #include <unistd.h>
 #include <string.h>
 
-#include "types.h"
 #include "xdg-shell-client-protocol.h"
+#include "wayland-client-protocol.h"
+
 #include <wayland-client-core.h>
-#include <wayland-client-protocol.h>
 #include <wayland-util.h>
 
 #define ENSURE_OR_GOTO_ERR(expr)                                                    \
@@ -31,8 +31,9 @@ static void set_allocator(wlclient_allocator* allocator);
 
 static void destroy_all_input_devices(void);
 static void destroy_input_device(wlclient_input_device* input_device);
+static void destroy_input_device_seat(wlclient_input_device* input_device);
 
-static void store_new_input_device(u32 id, struct wl_seat* seat);
+static void store_new_input_device(u32 id, struct wl_seat* seat, u32 seat_version);
 static wlclient_input_device* find_input_device_by_seat(struct wl_seat* seat);
 
 //======================================================================================================================
@@ -208,14 +209,29 @@ static void destroy_all_input_devices(void) {
 static void destroy_input_device(wlclient_input_device* input_device) {
     if (input_device->pointer)   wl_pointer_release(input_device->pointer);
     if (input_device->keyboard)  wl_keyboard_release(input_device->keyboard);
-    if (input_device->seat_name) free(input_device->seat_name);
-    if (input_device->seat)      wl_seat_destroy(input_device->seat);
+
+    destroy_input_device_seat(input_device);
 
     // Marks the pointer as unused along with zeroing out everything else:
     memset(input_device, 0, sizeof(*input_device));
 }
 
-static void store_new_input_device(u32 id, struct wl_seat* seat) {
+static void destroy_input_device_seat(wlclient_input_device* input_device) {
+    if (!input_device) return;
+
+    if (input_device->seat_name) {
+        free(input_device->seat_name);
+    }
+
+    if (input_device->seat_version >= 5) {
+        wl_seat_release(input_device->seat);
+    }
+    else {
+        wl_seat_destroy(input_device->seat);
+    }
+}
+
+static void store_new_input_device(u32 id, struct wl_seat* seat, u32 seat_version) {
     WLCLIENT_PANIC(
         g_state.input_devices_count < WLCLIENT_MAX_INPUT_DEVICES,
         "Maximum allowed seats (%"PRIi32") exceeded.",
@@ -225,6 +241,7 @@ static void store_new_input_device(u32 id, struct wl_seat* seat) {
     wlclient_input_device new_device = {
         .seat_id = id,
         .seat = seat,
+        .seat_version = seat_version,
         .used = true
     };
 
@@ -308,16 +325,16 @@ static void register_global(void* data, struct wl_registry* wl_registry, u32 id,
     else if (strcmp(interface, "wl_seat") == 0) {
         u32 effective_version = WLCLIENT_MIN((u32) wl_seat_interface.version, version);
         struct wl_seat* seat = wl_registry_bind(wl_registry, id, &wl_seat_interface, effective_version);
-        if (!seat) return;
+        WLCLIENT_PANIC(seat, "failed to create wl_seat");
 
         static const struct wl_seat_listener listener = {
             .capabilities = seat_capabilities,
             .name = seat_name,
         };
         i32 ret = wl_seat_add_listener(seat, &listener, NULL);
-        WLCLIENT_PANIC(ret == 0, "Failed to add seat listener");
+        WLCLIENT_PANIC(ret == 0, "failed to add seat listener");
 
-        store_new_input_device(id, seat);
+        store_new_input_device(id, seat, effective_version);
     }
 }
 

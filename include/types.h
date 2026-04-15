@@ -3,7 +3,6 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include <wayland-client-protocol.h>
 
 /* Basic types */
 typedef int8_t          i8;
@@ -67,6 +66,7 @@ typedef struct wlclient_input_device {
     u32 seat_id;
     u32 capabilities;
     struct wl_seat* seat;
+    u32 seat_version;
     char* seat_name;
     struct wl_pointer* pointer;
     struct wl_keyboard* keyboard;

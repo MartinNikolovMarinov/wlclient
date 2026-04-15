@@ -3,6 +3,8 @@
 #include "types.h"
 #include "wl-client.h"
 
+#include "wayland-client-protocol.h"
+
 void check_zeroed_out_gstate() {
     wlclient_global_state* s = _wlclient_get_wl_global_state();
     TEST_ASSERT_EQUAL_MEMORY(s, &ZEROED_OUT_GSTATE, sizeof(*s));

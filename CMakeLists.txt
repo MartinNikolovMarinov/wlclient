@@ -81,6 +81,7 @@ set(src_wlclient
     src/wl-client.c
 
     lib/wayland/xdg-shell-client-protocol.c
+    lib/wayland/wayland-client-protocol.c
 )
 
 if (WLCLIENT_BACKEND_EGL)
