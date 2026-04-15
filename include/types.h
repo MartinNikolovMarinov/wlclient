@@ -62,6 +62,16 @@ typedef struct wlclient_allocator {
     char* (*strdup)(const char*);
 } wlclient_allocator;
 
+typedef struct wclient_window_decoration_config {
+    u32 decor_logical_height; // The height of the window decoration
+    u32 edge_logical_thinkness; // The thickness for the edge decorations
+} wclient_window_decoration_config;
+
+const static wclient_window_decoration_config WCLIENT_NO_DECORATION_CONFIG = {
+    .edge_logical_thinkness = 0,
+    .decor_logical_height = 0
+};
+
 typedef struct wlclient_input_device {
     bool used;
     u32 seat_id;
@@ -79,6 +89,42 @@ typedef struct wlclient_window {
 
 typedef struct wlclient_window_data {
     bool used;
+
+    struct {
+        u32 window_logical_width, window_logical_height;
+        u32 window_max_logical_width, window_max_logical_height;
+    } toplevel_config_in_flight_packet;
+
+    // Logical window geometry in surface coordinates, including client-side decorations and edges.
+    u32 window_logical_width, window_logical_height;
+    // Logical content area, excluding client-side decorations and edges.
+    u32 content_logical_width, content_logical_height;
+    // Compositor-suggested maximum logical size.
+    u32 window_max_logical_width, window_max_logical_height;
+    // Pixel dimensions of the render target (content logical size * buffer_scale). Excludes decorations and edges.
+    u32 framebuffer_pixel_width, framebuffer_pixel_height;
+    // Scale factor reported by the compositor. May be fractional.
+    // Multiply logical sizes by this value to obtain pixel sizes.
+    f32 scale_factor;
+
+    // Core main wayland surface — the drawable area that pixel buffers attach to.
+    struct wl_surface* surface;
+    // XDG surface role — adds configure/ack lifecycle to the raw surface.
+    struct xdg_surface* xdg_surface;
+    // XDG toplevel role — makes the surface a desktop window with title, close, resize, etc.
+    struct xdg_toplevel* xdg_toplevel;
+
+    // Should the frame around the content be visible.
+    bool frame_hide;
+
+    // Logical decoration height in surface coordinates. Immutable after window creation.
+    u32 decor_logical_height;
+
+    // Logical border thickness for all edges. Immutable after window creation. 0 means no edges.
+    u32 edge_logical_thinkness;
+
+    // User hooks
+    void (*close_handler)(void);
 } wlclient_window_data;
 
 typedef struct wlclient_global_state {
@@ -111,5 +157,5 @@ typedef struct wlclient_global_state {
     // Backend hooks.
     void (*backend_shutdown)(void);
     void (*backend_destroy_window)(const wlclient_window* window);
-    void (*backend_resize_window)(const wlclient_window* window, i32 framebuffer_width, i32 framebuffer_height);
+    void (*backend_resize_window)(const wlclient_window* window, u32 framebuffer_width, u32 framebuffer_height);
 } wlclient_global_state;

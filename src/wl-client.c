@@ -23,6 +23,12 @@ do {                                                                            
 
 #define WLCLIENT_SHM_REQUIRED_VERSION 1
 
+#define WLCLIENT_MIN_CONTENT_WIDTH 100
+#define WLCLIENT_MIN_CONTENT_HEIGHT 100
+
+#define WLCLIENT_MAX_WINDOW_WIDTH 15360
+#define WLCLIENT_MAX_WINDOW_HEIGHT 8640
+
 static wlclient_global_state g_state;
 
 //======================================================================================================================
@@ -36,9 +42,12 @@ static void destroy_input_device(wlclient_input_device* input_device);
 static void destroy_input_device_seat(wlclient_input_device* input_device);
 static void destroy_input_device_pointer(wlclient_input_device* input_device);
 static void destroy_input_device_keyboard(wlclient_input_device* input_device);
-
 static void store_new_input_device(u32 id, struct wl_seat* seat, u32 seat_version);
 static wlclient_input_device* find_input_device_by_seat(struct wl_seat* seat);
+static i32 find_input_device_index_by_id(u32 id);
+static void remove_and_destroy_input_device_by_id(i32 idx);
+
+static void destroy_window_data(wlclient_window_data* wdata);
 
 //======================================================================================================================
 // Wayland Handlers
@@ -51,8 +60,20 @@ static void shm_pick_format(void *data, struct wl_shm *wl_shm, u32 format);
 
 static void xdg_wm_base_ping(void* data, struct xdg_wm_base* xdg_wm_base, u32 serial);
 
+static void xdg_toplevel_close(void*, struct xdg_toplevel* toplevel);
+static void xdg_toplevel_configure(void*, struct xdg_toplevel* toplevel, i32 width, i32 height, struct wl_array* states);
+static void xdg_toplevel_configure_bounds(void*, struct xdg_toplevel* toplevel, i32 width, i32 height);
+static void xdg_toplevel_configure_wm_capabilities(void*, struct xdg_toplevel* toplevel, struct wl_array* caps);
+
+static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u32 serial);
+
 static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilities);
 static void seat_name(void *data, struct wl_seat *wl_seat, const char *name);
+
+static void surface_preferred_buffer_scale(void* data, struct wl_surface* surface, i32 factor);
+static void surface_enter(void *data, struct wl_surface *wl_surface, struct wl_output *output);
+static void surface_leave(void *data, struct wl_surface *wl_surface, struct wl_output *output);
+static void surface_preferred_buffer_transform(void *data, struct wl_surface *wl_surface, u32 transform);
 
 static void pointer_enter(void* data, struct wl_pointer* wl_pointer, u32 serial, struct wl_surface* surface, wl_fixed_t surface_x, wl_fixed_t surface_y);
 static void pointer_leave(void* data, struct wl_pointer* wl_pointer, u32 serial, struct wl_surface* surface);
@@ -151,6 +172,13 @@ error:
 void wlclient_shutdown(void) {
     WLCLIENT_LOG_INFO("Shutting down...");
 
+    for (i32 i = 0; i < WLCLIENT_WINDOWS_COUNT; i++) {
+        if (g_state.windows[i].used) {
+            wlclient_window window = { .id = i };
+            wlclient_destroy_window(&window);
+        }
+    }
+
     if (g_state.backend_shutdown) g_state.backend_shutdown();
 
     destroy_all_input_devices();
@@ -174,6 +202,147 @@ void wlclient_shutdown(void) {
     WLCLIENT_LOG_INFO("Shutdown done");
 }
 
+wlclient_error_code wlclient_create_window(
+    wlclient_window* window,
+    u32 content_width, u32 content_height,
+    const char* title,
+    const wclient_window_decoration_config* decor_cfg
+) {
+    i32 ret;
+    wlclient_window_data* wdata = NULL;
+
+    WLCLIENT_ASSERT(window, "window argument is null");
+    WLCLIENT_ASSERT(title, "title argument is null");
+
+    WLCLIENT_LOG_DEBUG("Creating window (%"PRIi32"x%"PRIi32")", content_width, content_height);
+
+    // Select an unused slot for the new window:
+    window->id = -1;
+    {
+        for (i32 i = 0; i < WLCLIENT_WINDOWS_COUNT; i++) {
+            if (!g_state.windows[i].used) {
+                wdata = &g_state.windows[i];
+                window->id = i;
+                break;
+            }
+        }
+        ENSURE_OR_GOTO_ERR(wdata);
+    }
+
+    // Set the state that is need in some listener callback
+    {
+        wdata->decor_logical_height = 0;
+        if (decor_cfg && decor_cfg->decor_logical_height > 0) {
+            wdata->decor_logical_height = decor_cfg->decor_logical_height;
+        }
+
+        wdata->edge_logical_thinkness = 0;
+        if (decor_cfg && decor_cfg->edge_logical_thinkness > 0) {
+            wdata->edge_logical_thinkness = decor_cfg->edge_logical_thinkness;
+        }
+
+        wdata->scale_factor = 1.f;
+
+        wdata->content_logical_width = WLCLIENT_MAX(content_width, WLCLIENT_MIN_CONTENT_WIDTH);
+        wdata->content_logical_height = WLCLIENT_MAX(content_height, WLCLIENT_MIN_CONTENT_HEIGHT);
+
+        wdata->window_logical_width = content_width + (2 * wdata->edge_logical_thinkness);
+        wdata->window_logical_height = content_height + (2 * wdata->edge_logical_thinkness) + wdata->decor_logical_height;
+
+        wdata->window_max_logical_width = WLCLIENT_MAX_WINDOW_WIDTH;
+        wdata->window_max_logical_height = WLCLIENT_MAX_WINDOW_HEIGHT;
+
+        wdata->framebuffer_pixel_width = (u32)wdata->scale_factor * wdata->content_logical_width;
+        wdata->framebuffer_pixel_height = (u32)wdata->scale_factor * wdata->content_logical_height;
+
+        wdata->used = true;
+        wdata->frame_hide = !(wdata->decor_logical_height > 0);
+
+        // FIXME: set the anon files to -1 here for all nodes
+    }
+
+    // Create Surface
+    {
+        wdata->surface = wl_compositor_create_surface(g_state.compositor);
+        ENSURE_OR_GOTO_ERR(wdata->surface);
+
+        const static struct wl_surface_listener surface_listener = {
+            .enter = surface_enter,
+            .leave = surface_leave,
+            .preferred_buffer_scale = surface_preferred_buffer_scale, // sets the scale factor
+            .preferred_buffer_transform = surface_preferred_buffer_transform,
+        };
+        ret = wl_surface_add_listener(wdata->surface, &surface_listener, window);
+        ENSURE_OR_GOTO_ERR(ret == 0);
+    }
+
+    // Create XDG Surface and TopLevel role.
+    {
+        wdata->xdg_surface = xdg_wm_base_get_xdg_surface(g_state.xdgWmBase, wdata->surface);
+        ENSURE_OR_GOTO_ERR(wdata->xdg_surface);
+        wdata->xdg_toplevel = xdg_surface_get_toplevel(wdata->xdg_surface);
+        ENSURE_OR_GOTO_ERR(wdata->xdg_toplevel);
+
+        xdg_toplevel_set_title(wdata->xdg_toplevel, title);
+
+        const static struct xdg_surface_listener xdg_surface_listener = {
+            .configure = xdg_surface_configure // synchronizes the in flight packets
+        };
+        ret = xdg_surface_add_listener(wdata->xdg_surface, &xdg_surface_listener, window);
+        ENSURE_OR_GOTO_ERR(ret == 0);
+
+        const static struct xdg_toplevel_listener toplevel_listener = {
+            .close = xdg_toplevel_close,
+            .configure = xdg_toplevel_configure, // sets the in flight window logical width and height
+            .configure_bounds = xdg_toplevel_configure_bounds, // sets the in flight window max logical width and height
+            .wm_capabilities = xdg_toplevel_configure_wm_capabilities,
+        };
+        ret = xdg_toplevel_add_listener(wdata->xdg_toplevel, &toplevel_listener, window);
+        ENSURE_OR_GOTO_ERR(ret == 0);
+    }
+
+    // FIXME: create the edges and the decoration surface and subsurfaces here later
+
+    // Final round trip to finalize window creation.
+    wl_surface_commit(wdata->surface);
+    ret = wl_display_roundtrip(g_state.display);
+    ENSURE_OR_GOTO_ERR(ret >= 0);
+
+    ENSURE_OR_GOTO_ERR(wdata->scale_factor > 0);
+    ENSURE_OR_GOTO_ERR(wdata->window_logical_width > 0);
+    ENSURE_OR_GOTO_ERR(wdata->window_logical_height > 0);
+    ENSURE_OR_GOTO_ERR(wdata->window_max_logical_width > 0);
+    ENSURE_OR_GOTO_ERR(wdata->window_max_logical_height > 0);
+    ENSURE_OR_GOTO_ERR(wdata->content_logical_width > 0);
+    ENSURE_OR_GOTO_ERR(wdata->content_logical_height > 0);
+    ENSURE_OR_GOTO_ERR(wdata->framebuffer_pixel_width > 0);
+    ENSURE_OR_GOTO_ERR(wdata->framebuffer_pixel_height > 0);
+
+    WLCLIENT_LOG_DEBUG("Window creation done");
+    return WLCLIENT_ERROR_OK;
+
+error:
+    window->id = -1;
+    destroy_window_data(wdata);
+    return WLCLIENT_ERROR_WINDOW_CREATE_FAILED;
+}
+
+void wlclient_destroy_window(wlclient_window* window) {
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+
+    WLCLIENT_LOG_DEBUG("Destroying window with id=%" PRIi32 "...", window->id);
+    if (g_state.backend_destroy_window) {
+        g_state.backend_destroy_window(window);
+    }
+    destroy_window_data(wdata);
+    window->id = -1;
+    WLCLIENT_LOG_DEBUG("Destroyed");
+}
+
+//======================================================================================================================
+// INTERNALS IMPLEMENTATIONS
+//======================================================================================================================
+
 struct wl_display* _wlclient_get_wl_display(void) {
     WLCLIENT_ASSERT(g_state.display, "display is null");
     return g_state.display;
@@ -183,7 +352,7 @@ struct wlclient_global_state* _wlclient_get_wl_global_state(void) {
     return &g_state;
 }
 
-wlclient_window_data* wlclient_get_wl_window_data(const wlclient_window* window) {
+wlclient_window_data* _wlclient_get_wl_window_data(const wlclient_window* window) {
     WLCLIENT_ASSERT(window && window->id >= 0 && window->id < WLCLIENT_WINDOWS_COUNT, "Invalid window argument");
     wlclient_window_data* ret = &g_state.windows[window->id];
     WLCLIENT_ASSERT(ret->used, "Window is marked as unused");
@@ -198,7 +367,7 @@ void _wlclient_set_backend_destroy_window(void (*destroy_window)(const wlclient_
     g_state.backend_destroy_window = destroy_window;
 }
 
-void _wlclient_set_backend_resize_window(void (*resize_window)(const wlclient_window* window, i32 framebuffer_width, i32 framebuffer_height)) {
+void _wlclient_set_backend_resize_window(void (*resize_window)(const wlclient_window* window, u32 framebuffer_width, u32 framebuffer_height)) {
     g_state.backend_resize_window = resize_window;
 }
 
@@ -353,6 +522,22 @@ static void remove_and_destroy_input_device_by_id(i32 idx) {
     g_state.input_devices_count--;
 }
 
+static void destroy_window_data(wlclient_window_data* wdata) {
+    if (!wdata) return;
+
+    if (wdata->xdg_toplevel) xdg_toplevel_destroy(wdata->xdg_toplevel);
+    if (wdata->xdg_surface) xdg_surface_destroy(wdata->xdg_surface);
+
+    // FIXME: destroy nodes here later
+    // destroy_surface_node(&wdata->decoration_node);
+    // for (i32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
+    //     destroy_surface_node(&wdata->edge_nodes[i]);
+    // }
+
+    if (wdata->surface) wl_surface_destroy(wdata->surface);
+
+    memset(wdata, 0, sizeof(*wdata));
+}
 
 //======================================================================================================================
 // Wayland Handlers Implementations
@@ -499,6 +684,168 @@ static void xdg_wm_base_ping(void* data, struct xdg_wm_base* xdg_wm_base, u32 se
 }
 
 /**
+* This is the compositor close request for the xdg_toplevel. It indicates that the window should begin shutdown.
+*
+* This happens:
+*   - when the compositor requests that the window be closed
+*
+* Parameters:
+*   data      - user-provided wlclient_window pointer passed to xdg_toplevel_add_listener
+*   toplevel  - the xdg_toplevel instance
+*/
+static void xdg_toplevel_close(void* data, struct xdg_toplevel* toplevel) {
+    (void)toplevel;
+
+    wlclient_window* window = data;
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    if (wdata->close_handler) {
+        wdata->close_handler();
+    }
+}
+
+/**
+* This is the main configure event for the xdg_toplevel. It communicates the compositor's suggested logical size and
+* state for the window.
+*
+* This happens:
+*   - after the initial surface commit
+*   - whenever the compositor updates the window size or state
+*
+* Parameters:
+*   data      - user-provided wlclient_window pointer passed to xdg_toplevel_add_listener
+*   toplevel  - the xdg_toplevel instance
+*   width     - suggested logical window width, or 0 if unspecified
+*   height    - suggested logical window height, or 0 if unspecified
+*   states    - array of xdg_toplevel_state values describing the window state
+*/
+static void xdg_toplevel_configure(void* data, struct xdg_toplevel* toplevel, i32 width, i32 height, struct wl_array* states) {
+    (void)toplevel;
+    (void)states;
+
+    WLCLIENT_LOG_DEBUG("Top level configure size = %" PRIi32 "x%" PRIi32 "", width, height);
+
+    wlclient_window* window = data;
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    u32 w = width > 0 ? (u32)width : wdata->window_logical_width;
+    u32 h = height > 0 ? (u32)height : wdata->window_logical_height;
+
+    wdata->toplevel_config_in_flight_packet.window_logical_width = w;
+    wdata->toplevel_config_in_flight_packet.window_logical_height = h;
+}
+
+/**
+* This reports compositor-provided upper bounds for the xdg_toplevel's logical size.
+*
+* This happens:
+*   - when the compositor provides updated window bounds information
+*
+* Parameters:
+*   data      - user-provided wlclient_window pointer passed to xdg_toplevel_add_listener
+*   toplevel  - the xdg_toplevel instance
+*   width     - suggested maximum logical window width, or 0 if unspecified
+*   height    - suggested maximum logical window height, or 0 if unspecified
+*/
+static void xdg_toplevel_configure_bounds(void* data, struct xdg_toplevel* toplevel, i32 width, i32 height) {
+    (void)toplevel;
+
+    WLCLIENT_LOG_DEBUG("Top level bounds size = %" PRIi32 "x%" PRIi32, width, height);
+
+    wlclient_window* window = data;
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    u32 w = (width > 0) ? (u32) width : WLCLIENT_MAX_WINDOW_WIDTH;
+    u32 h = (height > 0) ? (u32) height : WLCLIENT_MAX_WINDOW_HEIGHT;
+
+    wdata->toplevel_config_in_flight_packet.window_max_logical_width = w;
+    wdata->toplevel_config_in_flight_packet.window_max_logical_height = h;
+}
+
+/**
+* This advertises the window management capabilities currently supported for the xdg_toplevel.
+*
+* This happens:
+*   - when the compositor sends updated window management capabilities
+*
+* Parameters:
+*   data      - user-provided wlclient_window pointer passed to xdg_toplevel_add_listener
+*   toplevel  - the xdg_toplevel instance
+*   caps      - array of xdg_toplevel_wm_capabilities values
+*/
+static void xdg_toplevel_configure_wm_capabilities(void* data, struct xdg_toplevel* toplevel, struct wl_array* caps) {
+    (void)data;
+    (void)toplevel;
+
+    WLCLIENT_LOG_TRACE("Toplevel capabilities:");
+    u32 *value;
+    usize i = 0;
+    wl_array_for_each(value, caps) {
+        WLCLIENT_LOG_TRACE("  [%" PRIu64 "] = %" PRIu32, i++, *value);
+    }
+}
+
+/**
+* Handles the xdg_surface configure handshake. This is a synchronization point where the client applies any pending
+* surface state changes for the configure and then acknowledges the serial. The ack must come after all state changes
+* have been applied — it signals the compositor that the client is done processing this configure sequence.
+*
+* This happens:
+*   - after the initial surface commit
+*   - whenever the compositor sends a new surface configure event
+*
+* Parameters:
+*   data        - user-provided wlclient_window pointer passed to xdg_surface_add_listener
+*   xdg_surface - the xdg_surface instance
+*   serial      - serial number that must be acknowledged with xdg_surface_ack_configure
+*/
+static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u32 serial) {
+    WLCLIENT_LOG_DEBUG("Surface configure serial: %" PRIu32, serial);
+
+    wlclient_window* window = data;
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+
+    wdata->window_max_logical_width = wdata->toplevel_config_in_flight_packet.window_max_logical_width;
+    wdata->window_max_logical_height = wdata->toplevel_config_in_flight_packet.window_max_logical_height;
+
+    wdata->window_logical_width = WLCLIENT_MIN(
+        wdata->toplevel_config_in_flight_packet.window_logical_width,
+        wdata->window_max_logical_width
+    );
+    wdata->window_logical_height = WLCLIENT_MIN(
+        wdata->toplevel_config_in_flight_packet.window_logical_height,
+        wdata->window_max_logical_height
+    );
+
+    wdata->content_logical_width = wdata->window_logical_width - (2 * wdata->edge_logical_thinkness);
+    wdata->content_logical_height = wdata->window_logical_height - (2 * wdata->edge_logical_thinkness) - wdata->decor_logical_height;
+
+    // TODO: [FRACTIONAL_SCALING] f32 rounding
+    wdata->framebuffer_pixel_width = (u32)wdata->scale_factor * wdata->content_logical_width;
+    wdata->framebuffer_pixel_height = (u32)wdata->scale_factor * wdata->content_logical_height;
+
+    // Notify the backend for a resize event:
+    if (g_state.backend_resize_window && wdata->used) {
+        g_state.backend_resize_window(window, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
+    }
+
+    WLCLIENT_LOG_DEBUG(
+        "Framebuffer size:\n  window_locical_size = %" PRIu32 "x%" PRIu32 ","
+        "\n  content_locical_size = %" PRIu32 "x%" PRIu32
+        "\n  framebuffer_size = %" PRIu32 "x%" PRIu32,
+        wdata->window_logical_width, wdata->window_logical_height,
+        wdata->content_logical_width, wdata->content_logical_height,
+        wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height
+    );
+
+    // Acknowledge the current configuration handshake with the compositor.
+    xdg_surface_ack_configure(xdg_surface, serial);
+
+    // FIXME: This is where I need to set these for edges and decoration.
+    // wl_surface_set_buffer_scale ..
+    // wl_surface_attach ..
+    // update state
+    // wl_surface_commit ..
+}
+
+/**
 * This reports which input device classes are currently exposed by the seat.
 *
 * This happens:
@@ -606,6 +953,92 @@ static void seat_name(void *data, struct wl_seat *wl_seat, const char *name) {
     WLCLIENT_PANIC(input_device->seat_name, "Failed to allocate memory for the seat name");
 }
 
+/**
+* This reports the compositor's preferred buffer scale for the surface. The client should render buffers at this
+* scale and advertise it back with wl_surface_set_buffer_scale.
+*
+* This happens:
+*   - after the surface becomes associated with outputs
+*   - whenever the compositor's preferred buffer scale changes
+*
+* Parameters:
+*   data    - user-provided wlclient_window pointer passed to wl_surface_add_listener
+*   surface - the wl_surface instance
+*   factor  - preferred buffer scale for the surface
+*/
+static void surface_preferred_buffer_scale(void* data, struct wl_surface* surface, i32 factor) {
+    wlclient_window* window = data;
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+
+    WLCLIENT_LOG_DEBUG("Preferred buffer scale: %" PRIi32, factor);
+
+    if ((i32)wdata->scale_factor == factor) return;
+
+    wdata->scale_factor = (f32)factor;
+    wl_surface_set_buffer_scale(surface, (i32) wdata->scale_factor); // TODO: [FRACTIONAL_SCALING] f32 rounding
+
+    // FIXME: what else needs to be notified here ? I guess the backend resize should be triggered.
+}
+
+/**
+* This notifies the client that the surface has entered the region of an output.
+*
+* This happens:
+*   - when any part of the surface first becomes visible on a given wl_output
+*   - when the surface is moved or resized so that it overlaps a new wl_output
+*
+* Parameters:
+*   data       - user-provided pointer passed to wl_surface_add_listener
+*   wl_surface - the wl_surface instance
+*   output     - the wl_output the surface has entered
+*/
+static void surface_enter(void *data, struct wl_surface *wl_surface, struct wl_output *output) {
+    (void)data;
+    (void)wl_surface;
+    (void)output;
+
+    WLCLIENT_LOG_DEBUG("Surface enter");
+}
+
+/**
+* This notifies the client that the surface has left the region of an output.
+*
+* This happens:
+*   - when the surface no longer overlaps a wl_output it previously entered
+*   - when the output is unplugged or otherwise removed
+*
+* Parameters:
+*   data       - user-provided pointer passed to wl_surface_add_listener
+*   wl_surface - the wl_surface instance
+*   output     - the wl_output the surface has left
+*/
+static void surface_leave(void *data, struct wl_surface *wl_surface, struct wl_output *output) {
+    (void)data;
+    (void)wl_surface;
+    (void)output;
+
+    WLCLIENT_LOG_DEBUG("Surface leave");
+}
+
+/**
+* This advertises the buffer transform the compositor prefers for this surface.
+*
+* This happens:
+*   - when the compositor determines an optimal wl_output_transform for attached buffers
+*   - when that preferred transform changes (e.g. output rotation)
+*
+* Parameters:
+*   data       - user-provided pointer passed to wl_surface_add_listener
+*   wl_surface - the wl_surface instance
+*   transform  - wl_output_transform value the compositor prefers for buffers
+*/
+static void surface_preferred_buffer_transform(void *data, struct wl_surface *wl_surface, u32 transform) {
+    (void)data;
+    (void)wl_surface;
+    (void)transform;
+
+    WLCLIENT_LOG_DEBUG("Surface preferred buffer transformaiton");
+}
 
 /**
 * This notifies the client that pointer focus entered one of its surfaces.

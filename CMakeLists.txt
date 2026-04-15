@@ -85,7 +85,7 @@ set(src_wlclient
 )
 
 if (WLCLIENT_BACKEND_EGL)
-    # set(src_wlclient ${src_wlclient} src/backends/wl-egl.c)
+    set(src_wlclient ${src_wlclient} src/backends/wl-egl.c)
 endif()
 
 set(src_sandbox
