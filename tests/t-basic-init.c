@@ -24,7 +24,7 @@ void assert_global_state_initialized() {
     TEST_ASSERT_NOT_NULL(s->compositor);
     TEST_ASSERT_NOT_NULL(s->subcompositor);
     TEST_ASSERT_NOT_NULL(s->shm);
-    TEST_ASSERT_TRUE(s->preffered_pixel_format == WL_SHM_FORMAT_ARGB8888);
+    TEST_ASSERT_TRUE(s->preferred_pixel_format == WL_SHM_FORMAT_ARGB8888);
 
     // Make sure no windows are currently in use:
     for (i32 i = 0; i < WLCLIENT_WINDOWS_COUNT; i++) {

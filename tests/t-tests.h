@@ -8,7 +8,7 @@
 #define UNITY_SET_FILE() (Unity.TestFile = __FILE__)
 
 static const wlclient_global_state ZEROED_OUT_GSTATE = {
-    .preffered_pixel_format = -1
+    .preferred_pixel_format = -1
 };
 
 i32 basic_tests(void);

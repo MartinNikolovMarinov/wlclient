@@ -90,6 +90,9 @@ wlclient_error_code wlclient_init(wlclient_allocator* allocator) {
         return WLCLIENT_ERROR_INIT_FAILED;
     }
 
+    // Make sure the pixel format is intentionally set to a value.
+    g_state.preferred_pixel_format = -1;
+
     // Setup the global registry
     {
         g_state.registry = wl_display_get_registry(g_state.display);
@@ -117,7 +120,7 @@ wlclient_error_code wlclient_init(wlclient_allocator* allocator) {
     ret = wl_display_roundtrip(g_state.display);
     ENSURE_OR_GOTO_ERR(ret >= 0);
 
-    ENSURE_OR_GOTO_ERR(g_state.preffered_pixel_format >= 0);
+    ENSURE_OR_GOTO_ERR(g_state.preferred_pixel_format >= 0);
 
     // Verify device inputs are configured correctly:
     {
@@ -166,8 +169,7 @@ void wlclient_shutdown(void) {
     }
 
     memset(&g_state, 0, sizeof(g_state));
-    g_state.preffered_pixel_format = -1;
-
+    g_state.preferred_pixel_format = -1;
 
     WLCLIENT_LOG_INFO("Shutdown done");
 }
@@ -205,9 +207,20 @@ void _wlclient_set_backend_resize_window(void (*resize_window)(const wlclient_wi
 //======================================================================================================================
 
 static void set_allocator(wlclient_allocator* allocator) {
-    g_state.allocator.alloc = allocator && allocator->alloc ? allocator->alloc : malloc;
-    g_state.allocator.free = allocator && allocator->free ? allocator->free : free;
-    g_state.allocator.strdup = allocator && allocator->strdup ? allocator->strdup : strdup;
+    if (allocator) {
+        WLCLIENT_ASSERT(allocator->alloc, "The allocator interface did not set a alloc callback");
+        WLCLIENT_ASSERT(allocator->free, "The allocator interface did not set a free callback");
+        WLCLIENT_ASSERT(allocator->strdup, "The allocator interface did not set a strdup callback");
+
+        g_state.allocator.alloc = allocator->alloc;
+        g_state.allocator.free = allocator->free;
+        g_state.allocator.strdup = allocator->strdup;
+    }
+    else {
+        g_state.allocator.alloc = malloc;
+        g_state.allocator.free = free;
+        g_state.allocator.strdup = strdup;
+    }
 }
 
 static void destroy_all_input_devices(void) {
@@ -437,6 +450,8 @@ static void register_global_remove(void* data, struct wl_registry* wl_registry, 
         i32 idx = find_input_device_index_by_id(id);
         if (idx >= 0) remove_and_destroy_input_device_by_id(idx);
     }
+
+    // TODO: [GLOBAL_OBJECT_REMOVE] Should any other objects be removed? GLFW seems to only handle monitors.
 }
 
 /**
@@ -460,7 +475,7 @@ static void shm_pick_format(void *data, struct wl_shm *wl_shm, u32 format) {
     // The spec states that ARGB8888 and XRGB8888 should be supported by all renderers, so it is safe to just pick
     // ARGB8888 and never bother with anything else.
     if (format == WL_SHM_FORMAT_ARGB8888) {
-        g_state.preffered_pixel_format = (i32) WL_SHM_FORMAT_ARGB8888;
+        g_state.preferred_pixel_format = (i32) WL_SHM_FORMAT_ARGB8888;
         WLCLIENT_LOG_DEBUG("Pixel format set to %" PRIu32, format);
     }
 }
@@ -500,7 +515,8 @@ static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilit
 
     WLCLIENT_LOG_DEBUG("Seat capabilities: %"PRIu32, capabilities);
 
-     wlclient_input_device* input_device = find_input_device_by_seat(wl_seat);
+    wlclient_input_device* input_device = find_input_device_by_seat(wl_seat);
+    input_device->capabilities = capabilities;
 
     if (capabilities & WL_SEAT_CAPABILITY_KEYBOARD) {
         if (!input_device->keyboard) {
@@ -524,7 +540,6 @@ static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilit
             // Keyboard was unplugged (or compositor revoked the capability).
             WLCLIENT_LOG_DEBUG("Releasing keyboard for seat(id=%"PRIu32")", input_device->seat_id);
             destroy_input_device_keyboard(input_device);
-            input_device->keyboard = NULL;
         }
         else {
             WLCLIENT_LOG_DEBUG("No keyboard capability for seat(id=%"PRIu32")", input_device->seat_id);
@@ -558,7 +573,6 @@ static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilit
             // Mouse was unplugged (or compositor revoked the capability).
             WLCLIENT_LOG_DEBUG("Releasing mouse for seat(id=%"PRIu32")", input_device->seat_id);
             destroy_input_device_pointer(input_device);
-            input_device->pointer = NULL;
         }
         else {
             WLCLIENT_LOG_DEBUG("No mouse capability for seat(id=%"PRIu32")", input_device->seat_id);

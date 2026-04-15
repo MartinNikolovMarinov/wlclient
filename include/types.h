@@ -99,7 +99,7 @@ typedef struct wlclient_global_state {
     // The singleton global object that provides support for shared memory.
     struct wl_shm* shm;
     // The preferred pixel format for software rendering.
-    i32 preffered_pixel_format;
+    i32 preferred_pixel_format;
 
     // State for all the open windows.
     wlclient_window_data windows[WLCLIENT_WINDOWS_COUNT];
