@@ -64,7 +64,7 @@ wlclient_error_code wlclient_init(wlclient_allocator* allocator) {
         g_state.registry = wl_display_get_registry(g_state.display);
         ENSURE_OR_GOTO_ERR(g_state.registry);
 
-        const static struct wl_registry_listener registry_listener = {
+        static const struct wl_registry_listener registry_listener = {
             .global = register_global,
             .global_remove = register_global_remove,
         };
@@ -113,6 +113,10 @@ void wlclient_shutdown(void) {
 struct wl_display* _wlclient_get_wl_display(void) {
     WLCLIENT_ASSERT(g_state.display, "display is null");
     return g_state.display;
+}
+
+struct wlclient_global_state* _wlclient_get_wl_global_state(void) {
+    return &g_state;
 }
 
 wlclient_window_data* wlclient_get_wl_window_data(const wlclient_window* window) {

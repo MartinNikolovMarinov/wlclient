@@ -31,12 +31,12 @@ WLCLIENT_API_INTERNAL void _wlclient_log_message(
     ...
 ) PRINTF_LIKE(3, 4);
 
-#define WLCLIENT_LOG_TRACE(format, ...) _wlclient_log_message(WLCLIENT_LOG_LEVEL_TRACE, __func__, format, ##__VA_ARGS__)
-#define WLCLIENT_LOG_DEBUG(format, ...) _wlclient_log_message(WLCLIENT_LOG_LEVEL_DEBUG, __func__, format, ##__VA_ARGS__)
-#define WLCLIENT_LOG_INFO(format, ...)  _wlclient_log_message(WLCLIENT_LOG_LEVEL_INFO,  __func__, format, ##__VA_ARGS__)
-#define WLCLIENT_LOG_WARN(format, ...)  _wlclient_log_message(WLCLIENT_LOG_LEVEL_WARN,  __func__, format, ##__VA_ARGS__)
-#define WLCLIENT_LOG_ERR(format, ...)   _wlclient_log_message(WLCLIENT_LOG_LEVEL_ERROR, __func__, format, ##__VA_ARGS__)
-#define WLCLIENT_LOG_FATAL(format, ...) _wlclient_log_message(WLCLIENT_LOG_LEVEL_FATAL, __func__, format, ##__VA_ARGS__)
+#define WLCLIENT_LOG_TRACE(...) _wlclient_log_message(WLCLIENT_LOG_LEVEL_TRACE, __func__, __VA_ARGS__)
+#define WLCLIENT_LOG_DEBUG(...) _wlclient_log_message(WLCLIENT_LOG_LEVEL_DEBUG, __func__, __VA_ARGS__)
+#define WLCLIENT_LOG_INFO(...)  _wlclient_log_message(WLCLIENT_LOG_LEVEL_INFO,  __func__, __VA_ARGS__)
+#define WLCLIENT_LOG_WARN(...)  _wlclient_log_message(WLCLIENT_LOG_LEVEL_WARN,  __func__, __VA_ARGS__)
+#define WLCLIENT_LOG_ERR(...)   _wlclient_log_message(WLCLIENT_LOG_LEVEL_ERROR, __func__, __VA_ARGS__)
+#define WLCLIENT_LOG_FATAL(...) _wlclient_log_message(WLCLIENT_LOG_LEVEL_FATAL, __func__, __VA_ARGS__)
 
 WLCLIENT_API_INTERNAL void _wlclient_report_wayland_fatal(
     struct wl_display* wl_display,

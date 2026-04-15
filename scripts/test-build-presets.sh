@@ -4,6 +4,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 build_dir="$repo_root/build"
+test_executable="$build_dir/tests"
 
 check_exit_code() {
     if [ $? -ne 0 ]; then
@@ -26,28 +27,31 @@ build_preset() {
     check_exit_code
 }
 
-test_preset() {
+run_test_preset() {
     local preset="$1"
 
     clean_build_dir
     build_preset "$preset"
 
-    if [ -f "$build_dir/CTestTestfile.cmake" ] || [ -d "$build_dir/Testing" ]; then
-        pushd "$build_dir" >/dev/null
-        echo "RUN TESTS IN PRESET = $preset"
-        ctest --output-on-failure
-        check_exit_code
-        popd >/dev/null
+    if [ ! -x "$test_executable" ]; then
+        echo "Test executable not found for preset = $preset"
+        exit 1
     fi
+
+    echo "RUN TESTS IN PRESET = $preset"
+    "$test_executable"
+}
+
+get_configure_presets() {
+    cmake --list-presets | sed -n 's/^[[:space:]]*"\([^"]*\)".*/\1/p'
 }
 
 run_tests_for_all_presets() {
-    test_preset "debug"
-    test_preset "release"
-    test_preset "clang-debug"
-    test_preset "clang-release"
-    test_preset "gcc-debug"
-    test_preset "gcc-release"
+    local preset
+
+    while IFS= read -r preset; do
+        run_test_preset "$preset"
+    done < <(get_configure_presets)
 }
 
 run_tests_for_all_presets

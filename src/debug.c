@@ -3,12 +3,11 @@
 
 #include <stdarg.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include <wayland-client-core.h>
 
-static wlclient_log_level g_log_level = WLCLIENT_LOG_LEVEL_INFO;
+static wlclient_log_level g_log_level = WLCLIENT_LOG_LEVEL_WARN;
 static i32 g_log_use_ansi = 1;
 
 static const char* wlclient_log_level_name(wlclient_log_level level) {

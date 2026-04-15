@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug Sandbox with Sandbox",
+            "name": "Debug Sandbox",
             "type": "lldb",
             "request": "launch",
             "program": "${workspaceFolder}/build/sandbox",
@@ -15,5 +15,19 @@
             "env": {},
             "preLaunchTask": "Build with Makefile",
         },
+        {
+            "name": "Debug Tests",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/tests",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "sourceMap": {
+                "./build": "${workspaceFolder}",
+            },
+            "stopOnEntry": false,
+            "env": {},
+            "preLaunchTask": "Build with Makefile",
+        }
     ]
 }

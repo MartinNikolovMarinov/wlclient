@@ -93,8 +93,9 @@ set(src_sandbox
 
 set(src_test
     tests/unity/unity.c
-
     tests/test_main.c
+
+    tests/t-basic-init.c
 )
 
 # ---------------------------------------- End Declare Source Files ----------------------------------------------------
