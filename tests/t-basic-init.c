@@ -173,10 +173,10 @@ i32 basic_wlclient_create_window_no_decoration(void) {
         &window,
         content_width, content_height,
         "create-window-no-decor-test",
-        &WCLIENT_NO_DECORATION_CONFIG
+        &WLCLIENT_NO_DECORATION_CONFIG
     );
     TEST_ASSERT_TRUE(result_code == WLCLIENT_ERROR_OK);
-    assert_window_state_initialized(&window, content_width, content_height, &WCLIENT_NO_DECORATION_CONFIG);
+    assert_window_state_initialized(&window, content_width, content_height, &WLCLIENT_NO_DECORATION_CONFIG);
 
     wlclient_shutdown();
     check_zeroed_out_gstate();

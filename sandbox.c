@@ -62,10 +62,10 @@ i32 main(void) {
     // Create window
     wlclient_window window;
     {
-        wlclient_window_decoration_config dcor_cfg = WCLIENT_NO_DECORATION_CONFIG;
+        wlclient_window_decoration_config dcor_cfg = WLCLIENT_NO_DECORATION_CONFIG;
         dcor_cfg.edge_logical_thickness = 5;
         dcor_cfg.decor_logical_height = 10;
-        result_code = wlclient_create_window(&window, 200, 300, "Example", &dcor_cfg);
+        result_code = wlclient_create_window(&window, 800, 600, "Example", &dcor_cfg);
         if (result_code != WLCLIENT_ERROR_OK) {
             printf("ERROR - %d\n", result_code);
             goto done;
@@ -79,7 +79,7 @@ i32 main(void) {
 
     while (g_running) {
         result_code = wlclient_poll_events(WLCLIENT_SECOND);
-        if (result_code != WLCLIENT_ERROR_OK) {
+        if (result_code != WLCLIENT_ERROR_OK && result_code != WLCLIENT_ERROR_EVENT_POLL_TIMEOUT) {
             printf("POLLING FAILED ERROR - %d\n", result_code);
             goto done;
         }

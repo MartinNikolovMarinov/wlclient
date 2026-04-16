@@ -10,11 +10,15 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <sys/mman.h>
+
 #include "xdg-shell-client-protocol.h"
 #include "wayland-client-protocol.h"
 
 #include <wayland-client-core.h>
 #include <wayland-util.h>
+
+// TODO: [FRACTIONAL_SCALING] Every calculation that uses scaling will have to change when fractional scaling is introduced.
 
 #define ENSURE_OR_GOTO_ERR(expr)                                                    \
 do {                                                                                \
@@ -60,6 +64,19 @@ static u32 window_to_content_height(const wlclient_window_data* wdata, u32 windo
 
 static bool display_flush(struct wl_display* display);
 
+// FIXME: next stuff:
+// static void surface_node_destroy(wlclient_surface_node* node);
+static void surface_node_destroy_buffers(wlclient_surface_node* node);
+static void surface_node_create_buffers(wlclient_surface_node* node, u32 pixel_width, u32 pixel_height);
+static void surface_node_change_pool_size(wlclient_surface_node* node, u32 pixel_width, u32 pixel_height);
+static void surface_node_set_non_transperant_region(wlclient_surface_node* node, u32 pixel_width, u32 pixel_height);
+static void surface_node_render(wlclient_surface_node* node);
+
+static void decor_update_position(wlclient_window_data* wdata);
+static void decor_handle_resize(wlclient_window_data* wdata);
+
+static void edges_update_position(wlclient_window_data* wdata);
+
 //======================================================================================================================
 // Wayland Handlers
 //======================================================================================================================
@@ -85,6 +102,8 @@ static void surface_preferred_buffer_scale(void* data, struct wl_surface* surfac
 static void surface_enter(void *data, struct wl_surface *wl_surface, struct wl_output *output);
 static void surface_leave(void *data, struct wl_surface *wl_surface, struct wl_output *output);
 static void surface_preferred_buffer_transform(void *data, struct wl_surface *wl_surface, u32 transform);
+
+static void release_buffer(void *data, struct wl_buffer *wl_buffer);
 
 static void pointer_enter(void* data, struct wl_pointer* wl_pointer, u32 serial, struct wl_surface* surface, wl_fixed_t surface_x, wl_fixed_t surface_y);
 static void pointer_leave(void* data, struct wl_pointer* wl_pointer, u32 serial, struct wl_surface* surface);
@@ -269,7 +288,11 @@ wlclient_error_code wlclient_create_window(
         wdata->used = true;
         wdata->frame_hide = !(wdata->decor_logical_height > 0);
 
-        // FIXME: set the anon files to -1 here for all nodes
+        // Set the file descriptors for each surface node to an explicitly wrong value.
+        wdata->decor_node.anon_file_fd = -1;
+        for (i32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
+            wdata->edge_nodes[i].anon_file_fd = -1;
+        }
     }
 
     // Create Surface
@@ -315,7 +338,39 @@ wlclient_error_code wlclient_create_window(
         ENSURE_OR_GOTO_ERR(ret == 0);
     }
 
-    // FIXME: create the edges and the decoration surface and subsurfaces here later
+    if (!wdata->frame_hide) {
+        // Create the decoration child surface and subsurface after the parent has its toplevel role.
+        {
+            wdata->decor_node.child_surface = wl_compositor_create_surface(g_state.compositor);
+            ENSURE_OR_GOTO_ERR(wdata->decor_node.child_surface);
+
+            wdata->decor_node.subsurface = wl_subcompositor_get_subsurface(
+                g_state.subcompositor,
+                wdata->decor_node.child_surface,
+                wdata->surface
+            );
+            ENSURE_OR_GOTO_ERR(wdata->decor_node.subsurface);
+
+            decor_update_position(wdata);
+        }
+
+        // Create invisible edge subsurfaces for interactive resize hit regions.
+        {
+            for (i32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
+                wdata->edge_nodes[i].child_surface = wl_compositor_create_surface(g_state.compositor);
+                ENSURE_OR_GOTO_ERR(wdata->edge_nodes[i].child_surface);
+
+                wdata->edge_nodes[i].subsurface = wl_subcompositor_get_subsurface(
+                    g_state.subcompositor,
+                    wdata->edge_nodes[i].child_surface,
+                    wdata->surface
+                );
+                ENSURE_OR_GOTO_ERR(wdata->edge_nodes[i].subsurface);
+            }
+
+            edges_update_position(wdata);
+        }
+    }
 
     // Final round trip to finalize window creation.
     wl_surface_commit(wdata->surface);
@@ -331,6 +386,8 @@ wlclient_error_code wlclient_create_window(
     ENSURE_OR_GOTO_ERR(wdata->content_logical_height > 0);
     ENSURE_OR_GOTO_ERR(wdata->framebuffer_pixel_width > 0);
     ENSURE_OR_GOTO_ERR(wdata->framebuffer_pixel_height > 0);
+
+    // FIXME: Ensure that the decor node and edge nodes exist.
 
     log_window_data_dimensions(wdata, WLCLIENT_LOG_LEVEL_DEBUG, __func__);
 
@@ -394,15 +451,12 @@ WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns) {
 
             if (ret > 0) {
                 // Dispatched at least one already-queued event, so return without blocking.
-                received_event = true;
-                break;
+                goto done_ok;
             }
             if (ret < 0) {
                 goto poll_failed;
             }
         }
-
-        if (received_event) goto done_ok;
 
         bool ok = display_flush(g_state.display);
         if (!ok) {
@@ -417,7 +471,7 @@ WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns) {
         }
         else if (poll_result.timedout) {
             wl_display_cancel_read(g_state.display);
-            goto done_ok;
+            goto poll_timeout;
         }
 
         // NOTE: Quote from the manual page:
@@ -442,6 +496,10 @@ WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns) {
         }
         else {
             wl_display_cancel_read(g_state.display);
+
+            if (pfds[DISPLAY_FD].revents & (POLLERR | POLLHUP)) {
+                goto poll_failed;
+            }
         }
     }
 
@@ -449,6 +507,8 @@ done_ok:
     return WLCLIENT_ERROR_OK;
 poll_failed:
     return WLCLIENT_ERROR_EVENT_POLL_FAILED;
+poll_timeout:
+    return WLCLIENT_ERROR_EVENT_POLL_TIMEOUT;
 }
 
 void wlclient_set_close_handler(wlclient_window* window, wlclient_close_handler handler) {
@@ -720,6 +780,233 @@ static bool display_flush(struct wl_display* display) {
     }
 
     return res;
+}
+
+/**
+* Position the invisible resize-edge subsurfaces relative to the main surface origin.
+* Subsurface positions are cached state — the changes only take effect on the next parent surface commit.
+*/
+static void edges_update_position(wlclient_window_data* wdata) {
+    WLCLIENT_ASSERT(wdata->edge_logical_thickness > 0, "Invalid edge logical thickness");
+
+    i32 decor_height = (i32)wdata->decor_logical_height;
+    i32 boarder_thickness = (i32)wdata->edge_logical_thickness;
+    i32 bottom = (i32) wdata->content_logical_height;
+    i32 right = (i32) wdata->content_logical_width;
+
+    wl_subsurface_set_position(
+        wdata->edge_nodes[WLCLIENT_EDGE_TOP].subsurface,
+        -boarder_thickness,
+        -decor_height - boarder_thickness
+    );
+    wl_subsurface_set_position(
+        wdata->edge_nodes[WLCLIENT_EDGE_BOTTOM].subsurface,
+        -boarder_thickness,
+        bottom
+    );
+    wl_subsurface_set_position(
+        wdata->edge_nodes[WLCLIENT_EDGE_LEFT].subsurface,
+        -boarder_thickness,
+        -decor_height
+    );
+    wl_subsurface_set_position(
+        wdata->edge_nodes[WLCLIENT_EDGE_RIGHT].subsurface,
+        right,
+        -decor_height
+    );
+}
+
+static void surface_node_destroy_buffers(wlclient_surface_node* node) {
+    if (node->pixel_data) {
+        const usize stride = (usize) (node->pixel_width * WLCLIENT_BYTES_PER_PIXEL);
+        usize map_size = stride * (usize) node->pixel_height * WLCLIENT_FRAME_BUFFERS_COUNT;
+        munmap(node->pixel_data, map_size);
+        node->pixel_data = NULL;
+    }
+
+    for (i32 i = 0; i < WLCLIENT_FRAME_BUFFERS_COUNT; i++) {
+        if (node->buffers[i]) wl_buffer_destroy(node->buffers[i]);
+        node->buffers[i] = NULL;
+    }
+}
+
+static void surface_node_create_buffers(wlclient_surface_node* node, u32 pixel_width, u32 pixel_height) {
+    WLCLIENT_LOG_TRACE("Creating node buffers with sizes %"PRIu32"x%"PRIu32"", pixel_width, pixel_height);
+
+    WLCLIENT_ASSERT(!node->pixel_data, "[LEAK] The pixel data should have been freed");
+
+    u32 stride = pixel_width * WLCLIENT_BYTES_PER_PIXEL;
+    u32 single_buffer_size = stride * pixel_height;
+    u32 pool_size = single_buffer_size * WLCLIENT_FRAME_BUFFERS_COUNT;
+    node->pixel_data = mmap(
+        NULL,
+        (u32) pool_size,
+        PROT_READ | PROT_WRITE, MAP_SHARED,
+        node->anon_file_fd,
+        0
+    );
+    WLCLIENT_PANIC(
+        node->pixel_data != MAP_FAILED,
+        "Failed mmap decoration pixel data with size %"PRIu32"",
+        pool_size
+    );
+    memset(node->pixel_data, 0, pool_size);
+
+    for (i32 i = 0; i < WLCLIENT_FRAME_BUFFERS_COUNT; i++) {
+        i32 offset = i * (i32)single_buffer_size;
+
+        WLCLIENT_ASSERT(!node->buffers[i], "[LEAK] All node buffers should have been destroyed.");
+
+        node->buffers[i] = wl_shm_pool_create_buffer(
+            node->shm_pool, offset,
+            (i32) pixel_width, (i32) pixel_height,
+            (i32) stride,
+            (u32) g_state.preferred_pixel_format
+        );
+        WLCLIENT_PANIC(node->buffers[i], "Failed to create wl_buffer from pool");
+
+        static struct wl_buffer_listener listener = {
+            .release = release_buffer,
+        };
+        i32 ret = wl_buffer_add_listener(node->buffers[i], &listener, &node->ready_states[i]);
+        WLCLIENT_PANIC(ret == 0, "Failed to set release buffer listener");
+
+        node->ready_states[i] = true;
+    }
+
+    WLCLIENT_LOG_TRACE("Node buffers creation done");
+}
+
+/**
+* Re-create the temporary file and shm pool if the new decoration size won't fit. This logic only ever increases the
+* size of the decoration buffer but never shrinks it.
+*/
+static void surface_node_change_pool_size(wlclient_surface_node* node, u32 pixel_width, u32 pixel_height) {
+    WLCLIENT_LOG_TRACE(
+        "Chaning pool size from %"PRIu32"x%"PRIu32" to %"PRIu32"x%"PRIu32"",
+        node->pixel_width, node->pixel_height,
+        pixel_width, pixel_height
+    );
+
+    WLCLIENT_ASSERT(node, "node argument is null");
+
+    u32 old_stride = node->pixel_width * WLCLIENT_BYTES_PER_PIXEL;
+    u32 new_stride = pixel_width * WLCLIENT_BYTES_PER_PIXEL;
+
+    u32 old_size = old_stride * node->pixel_height * WLCLIENT_FRAME_BUFFERS_COUNT;
+    u32 new_size = new_stride * pixel_height * WLCLIENT_FRAME_BUFFERS_COUNT;
+
+    bool should_recreate = (node->anon_file_fd < 0) || (old_size < new_size);
+    if (!should_recreate) {
+        // existing anonymous file is large enough.
+        return;
+    }
+
+    // Close the old anonymous file:
+    if (node->anon_file_fd >= 0) {
+        close(node->anon_file_fd);
+        node->anon_file_fd = -1;
+    }
+    // Destroy the old pool:
+    if (node->shm_pool) {
+        wl_shm_pool_destroy(node->shm_pool);
+        node->shm_pool = NULL;
+    }
+
+    // Create a new anonymous file for the shared pixel buffer:
+    node->anon_file_fd = memfd_create("surface-node-fd", 0);
+    WLCLIENT_PANIC(node->anon_file_fd >= 0, "Failed to create temporary anonymous file");
+
+    i32 ret = ftruncate(node->anon_file_fd, new_size);
+    WLCLIENT_PANIC(ret == 0, "Failed to truncate temporary anonymous file");
+
+    node->shm_pool = wl_shm_create_pool(g_state.shm, node->anon_file_fd, (i32)new_size);
+    WLCLIENT_PANIC(node->shm_pool, "Failed to create shm pool");
+
+    WLCLIENT_LOG_TRACE("Pool size change done");
+}
+
+// Hint to the compositor that the surface region will be non-transparent.
+static void surface_node_set_non_transperant_region(wlclient_surface_node* node, u32 pixel_width, u32 pixel_height) {
+    struct wl_region* empty_region = wl_compositor_create_region(g_state.compositor);
+    WLCLIENT_PANIC(empty_region, "wl_compositor_create_region failed");
+
+    wl_region_add(empty_region, 0, 0, (i32) pixel_width, (i32) pixel_height);
+    wl_surface_set_opaque_region(node->child_surface, empty_region);
+    wl_region_destroy(empty_region);
+}
+
+/**
+* Position the decoration directly above the main content surface.
+*/
+static void decor_update_position(wlclient_window_data* wdata) {
+    i32 decor_height = (i32)wdata->decor_logical_height * (i32)wdata->scale_factor;
+    wl_subsurface_set_position(wdata->decor_node.subsurface, 0, -decor_height);
+}
+
+static void decor_handle_resize(wlclient_window_data* wdata) {
+    u32 decor_pixel_width = wdata->content_logical_width * (u32)wdata->scale_factor;
+    u32 decor_pixel_height = wdata->decor_logical_height * (u32)wdata->scale_factor;
+    surface_node_change_pool_size(&wdata->decor_node, decor_pixel_width, decor_pixel_height);
+
+    // Re-create the buffers:
+    surface_node_destroy_buffers(&wdata->decor_node);
+    surface_node_create_buffers(&wdata->decor_node, decor_pixel_width, decor_pixel_height);
+
+    surface_node_set_non_transperant_region(&wdata->decor_node, decor_pixel_width, decor_pixel_height);
+
+    wdata->decor_node.pixel_width = decor_pixel_width;
+    wdata->decor_node.pixel_height = decor_pixel_height;
+
+    decor_update_position(wdata); // might not be necessary
+}
+
+static void surface_node_render(wlclient_surface_node* node) {
+    WLCLIENT_LOG_DEBUG("Render decoration called...");
+
+    // Find a ready buffer
+    i32 buf_idx = -1;
+    {
+        for (i32 i = 0; i < WLCLIENT_FRAME_BUFFERS_COUNT; i++) {
+            if (node->ready_states[i]) {
+                buf_idx = i;
+                break;
+            }
+        }
+    }
+    if (buf_idx < 0) {
+        WLCLIENT_LOG_DEBUG("No available buffer for decoration rendering...");
+        WLCLIENT_ASSERT(false, "TODO: Can I assume this?");
+        return;
+    }
+
+    WLCLIENT_LOG_DEBUG("Using buffer at index %"PRIi32, buf_idx);
+
+    // TODO: How do I hook this to something that will do the actual correct colors/shapes ?
+    {
+        u32 stride = node->pixel_width * WLCLIENT_BYTES_PER_PIXEL;
+        u32 single_buffer_size = stride * node->pixel_height;
+        u32 byte_offset = (u32) buf_idx * single_buffer_size;
+        u32 pixel_count = node->pixel_width * node->pixel_height;
+        u8* pixels = node->pixel_data + byte_offset;
+        u8 b = (u8) (rand() & 255);
+        u8 g = (u8) (rand() & 255);
+        u8 r = (u8) (rand() & 255);
+        for (u32 p = 0; p < pixel_count; p++) {
+            u32 idx = p * WLCLIENT_BYTES_PER_PIXEL;
+            pixels[idx + 0] = b;
+            pixels[idx + 1] = g;
+            pixels[idx + 2] = r;
+            pixels[idx + 3] = 255;
+        }
+    }
+
+    node->ready_states[buf_idx] = false;
+    wl_surface_attach(node->child_surface, node->buffers[buf_idx], 0, 0);
+    wl_surface_damage_buffer(node->child_surface, 0, 0, (i32) node->pixel_width, (i32) node->pixel_height);
+    wl_surface_commit(node->child_surface);
+
+    WLCLIENT_LOG_DEBUG("Render decoration done.");
 }
 
 //======================================================================================================================
@@ -1006,27 +1293,31 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
     wdata->content_logical_width = window_to_content_width(wdata, wdata->window_logical_width);
     wdata->content_logical_height = window_to_content_height(wdata, wdata->window_logical_height);
 
-    // TODO: [FRACTIONAL_SCALING] f32 rounding
     wdata->framebuffer_pixel_width = (u32)wdata->scale_factor * wdata->content_logical_width;
     wdata->framebuffer_pixel_height = (u32)wdata->scale_factor * wdata->content_logical_height;
-
-    // Notify the backend for a resize event:
-    if (g_state.backend_resize_window && wdata->used) {
-        g_state.backend_resize_window(window, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
-    }
 
     log_window_data_dimensions(wdata, WLCLIENT_LOG_LEVEL_DEBUG, __func__);
 
     // Acknowledge the current configuration handshake with the compositor.
     xdg_surface_ack_configure(xdg_surface, serial);
 
-    // FIXME: This is where I need to set these for edges and decoration.
-    // wl_surface_set_buffer_scale ..
-    // wl_surface_attach ..
-    // update state
-    // wl_surface_commit ..
+    // Render decoration node
+    {
+        decor_handle_resize(wdata);
+        if (!wdata->frame_hide) {
+            surface_node_render(&wdata->decor_node);
+        }
+        else {
+            WLCLIENT_LOG_DEBUG("Decoration hidden; will not render");
+        }
+    }
 
-    // zero out the in-flight packet/
+    // Notify the backend for a resize event:
+    if (g_state.backend_resize_window && wdata->used) {
+        g_state.backend_resize_window(window, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
+    }
+
+    // zero out the in-flight packet
     memset(&wdata->toplevel_config_in_flight_packet, 0, sizeof(wdata->toplevel_config_in_flight_packet));
 }
 
@@ -1160,7 +1451,7 @@ static void surface_preferred_buffer_scale(void* data, struct wl_surface* surfac
     if ((i32)wdata->scale_factor == factor) return;
 
     wdata->scale_factor = (f32)factor;
-    wl_surface_set_buffer_scale(surface, (i32) wdata->scale_factor); // TODO: [FRACTIONAL_SCALING] f32 rounding
+    wl_surface_set_buffer_scale(surface, (i32) wdata->scale_factor);
 
     // FIXME: what else needs to be notified here ? I guess the backend resize should be triggered.
 }
@@ -1223,6 +1514,24 @@ static void surface_preferred_buffer_transform(void *data, struct wl_surface *wl
     (void)transform;
 
     WLCLIENT_LOG_DEBUG("Surface preferred buffer transformaiton");
+}
+
+/**
+* This signals that the compositor is done reading from the decoration buffer and the client may reuse it.
+*
+* This happens:
+*   - after the compositor finishes displaying a committed buffer
+*
+* Parameters:
+*   data      - pointer to the corresponding decoration_buffer_ready_states entry
+*   wl_buffer - the wl_buffer instance being released
+*/
+static void release_buffer(void *data, struct wl_buffer *wl_buffer) {
+    (void)wl_buffer;
+
+    WLCLIENT_LOG_TRACE("Buffer released");
+    bool* ready = data;
+    *ready = true;
 }
 
 /**

@@ -70,7 +70,7 @@ typedef struct wlclient_window_decoration_config {
     u32 edge_logical_thickness; // The thickness for the edge decorations
 } wlclient_window_decoration_config;
 
-const static wlclient_window_decoration_config WCLIENT_NO_DECORATION_CONFIG = {
+const static wlclient_window_decoration_config WLCLIENT_NO_DECORATION_CONFIG = {
     .edge_logical_thickness = 0,
     .decor_logical_height = 0
 };
@@ -85,6 +85,34 @@ typedef struct wlclient_input_device {
     struct wl_pointer* pointer;
     struct wl_keyboard* keyboard;
 } wlclient_input_device;
+
+typedef enum wlclient_edge {
+    WLCLIENT_EDGE_TOP,
+    WLCLIENT_EDGE_BOTTOM,
+    WLCLIENT_EDGE_LEFT,
+    WLCLIENT_EDGE_RIGHT,
+    WLCLIENT_EDGE_COUNT,
+} wlclient_edge;
+
+typedef struct wlclient_surface_node {
+    // The child surface attached to the main window surface.
+    struct wl_surface* child_surface;
+    // Subsurface links the child_surface to the main window surface.
+    struct wl_subsurface* subsurface;
+    // Decoration dimensions in pixels (logical size * buffer_scale).
+    u32 pixel_width;
+    u32 pixel_height;
+    // Shared-memory pool backing all buffers for this surface node.
+    struct wl_shm_pool* shm_pool;
+    // Buffers attached to child_surface.
+    struct wl_buffer* buffers[WLCLIENT_FRAME_BUFFERS_COUNT];
+    // Indicates when the corresponding buffer has been released by the compositor and may be reused.
+    bool ready_states[WLCLIENT_FRAME_BUFFERS_COUNT];
+    // Anonymous file descriptor backing shm_pool.
+    i32 anon_file_fd;
+    // A flat pixel storage for all buffers in shm_pool. Memory mapped from the anonymous file.
+    u8* pixel_data;
+} wlclient_surface_node;
 
 typedef struct wlclient_window {
     i32 id;
@@ -123,9 +151,14 @@ typedef struct wlclient_window_data {
 
     // Logical decoration height in surface coordinates. Immutable after window creation.
     u32 decor_logical_height;
+    // The node for the client side decoration. Positioned above the main surface to render the title bar.
+    wlclient_surface_node decor_node;
 
     // Logical border thickness for all edges. Immutable after window creation. 0 means no edges.
     u32 edge_logical_thickness;
+    // These are the surface nodes that are used to provide hit regions for interactive window resizing.
+    // These are rendered around the window as boarders.
+    wlclient_surface_node edge_nodes[WLCLIENT_EDGE_COUNT];
 
     // User hooks
     wlclient_close_handler close_handler;
