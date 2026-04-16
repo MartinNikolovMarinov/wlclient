@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #define _GNU_SOURCE
 
 #include "wl-client.h"
@@ -6,6 +7,8 @@
 
 #include <unistd.h>
 #include <string.h>
+#include <errno.h>
+#include <poll.h>
 
 #include "xdg-shell-client-protocol.h"
 #include "wayland-client-protocol.h"
@@ -48,6 +51,9 @@ static i32 find_input_device_index_by_id(u32 id);
 static void remove_and_destroy_input_device_by_id(i32 idx);
 
 static void destroy_window_data(wlclient_window_data* wdata);
+static void log_window_data_dimensions(wlclient_window_data* wdata, wlclient_log_level level, const char* function_name);
+
+static bool display_flush(struct wl_display* display);
 
 //======================================================================================================================
 // Wayland Handlers
@@ -191,8 +197,8 @@ void wlclient_shutdown(void) {
 
     if (g_state.display) {
         // Flush the pending destory requests before disconnecting.
-        i32 ret = wl_display_flush(g_state.display);
-        WLCLIENT_ASSERT(ret >= 0, "Failed to flush on shutdown");
+        bool ok = display_flush(g_state.display);
+        WLCLIENT_ASSERT(ok, "Failed to flush on shutdown");
         wl_display_disconnect(g_state.display);
     }
 
@@ -206,7 +212,7 @@ wlclient_error_code wlclient_create_window(
     wlclient_window* window,
     u32 content_width, u32 content_height,
     const char* title,
-    const wclient_window_decoration_config* decor_cfg
+    const wlclient_window_decoration_config* decor_cfg
 ) {
     i32 ret;
     wlclient_window_data* wdata = NULL;
@@ -318,6 +324,8 @@ wlclient_error_code wlclient_create_window(
     ENSURE_OR_GOTO_ERR(wdata->framebuffer_pixel_width > 0);
     ENSURE_OR_GOTO_ERR(wdata->framebuffer_pixel_height > 0);
 
+    log_window_data_dimensions(wdata, WLCLIENT_LOG_LEVEL_DEBUG, __func__);
+
     WLCLIENT_LOG_DEBUG("Window creation done");
     return WLCLIENT_ERROR_OK;
 
@@ -339,6 +347,97 @@ void wlclient_destroy_window(wlclient_window* window) {
     destroy_window_data(wdata);
     window->id = -1;
     WLCLIENT_LOG_DEBUG("Destroyed");
+}
+
+WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns) {
+    WLCLIENT_LOG_TRACE("Polling for events...");
+
+    (void) timeout_ns;
+
+    bool received_event = false;
+    enum { DISPLAY_FD }; // TODO: Will probably need an fd for cursor animation.
+    struct pollfd pfds[] =
+    {
+        [DISPLAY_FD] = {.fd = wl_display_get_fd(g_state.display), .events = POLLIN, .revents = 0},
+    };
+    const i32 pfds_size = WLCLIENT_ARRAY_SIZE(pfds);
+
+    while (!received_event)
+    {
+        // NOTE: Quote from the manual page:
+        //
+        // wl_display_prepare_read This function must be called before reading from the file descriptor using
+        // wl_display_read_events(). Calling wl_display_prepare_read() announces the calling threads intention to read
+        // and ensures that until the thread is ready to read and calls wl_display_read_events(), no other thread will
+        // read from the file descriptor. This only succeeds if the event queue is empty though, and if there are
+        // undispatched events in the queue, -1 is returned and errno set to EAGAIN.
+        while (wl_display_prepare_read(g_state.display) != 0)
+        {
+            // NOTE: Quote from the manual page:
+            //
+            // wl_display_dispatch_pending is necessary when a client's main loop wakes up on some fd other than the
+            // display fd (network socket, timer fd, etc) and calls wl_display_dispatch_queue() from that callback.
+            // This may queue up events in the main queue while reading all data from the display fd.
+            //
+            // When the main thread returns to the main loop to block, the display fd no longer has data, causing a
+            // call to poll(2) (or similar functions) to block indefinitely, even though there are events ready to
+            // dispatch.
+            //
+            // The dispatch is what actually fires the listeners.
+            i32 ret = wl_display_dispatch_pending(g_state.display);
+
+            if (ret > 0) {
+                // Dispatched at least one already-queued event, so return without blocking.
+                received_event = true;
+                break;
+            }
+            if (ret < 0) {
+                return WLCLIENT_ERROR_EVENT_POLL_FAILED;
+            }
+        }
+
+        if (received_event) break;
+
+        bool ok = display_flush(g_state.display);
+        if (!ok) {
+            wl_display_cancel_read(g_state.display);
+            return WLCLIENT_ERROR_EVENT_POLL_FAILED;
+        }
+
+        // FIXME: This needs to be wrapped in order to allow timout polling in nanoseconds, or at least just use ppoll!!
+        // Also EINTR and EAGAIN need to be handled!
+        i32 poll_ret = poll(pfds, pfds_size, -1);
+        if (poll_ret < 0) {
+            wl_display_cancel_read(g_state.display);
+            return WLCLIENT_ERROR_EVENT_POLL_FAILED;
+        }
+
+        // NOTE: Quote from the manual page:
+        //
+        // If a thread successfully calls wl_display_prepare_read(), it must either call wl_display_read_events() when
+        // it's ready or cancel the read intention by calling wl_display_cancel_read().
+        if (pfds[DISPLAY_FD].revents & POLLIN) {
+            // Read and queue events into their corresponding event queues:
+            i32 dispatch_events_ret = wl_display_read_events(g_state.display);
+            if (dispatch_events_ret < 0) {
+                return WLCLIENT_ERROR_EVENT_POLL_FAILED;
+            }
+
+            // Dispatch events in a non-blocking manner. The dispatch is what actually fires the listeners.
+            i32 dispatch_pending_ret = wl_display_dispatch_pending(g_state.display);
+            if (dispatch_pending_ret > 0) {
+                received_event = true;
+            }
+            else if (dispatch_pending_ret < 0) {
+                return WLCLIENT_ERROR_EVENT_POLL_FAILED;
+            }
+        }
+        else {
+            wl_display_cancel_read(g_state.display);
+        }
+    }
+
+    return WLCLIENT_ERROR_OK;
 }
 
 //======================================================================================================================
@@ -539,6 +638,54 @@ static void destroy_window_data(wlclient_window_data* wdata) {
     if (wdata->surface) wl_surface_destroy(wdata->surface);
 
     memset(wdata, 0, sizeof(*wdata));
+}
+
+static void log_window_data_dimensions(wlclient_window_data* wdata, wlclient_log_level level, const char* function_name) {
+    _wlclient_log_message(
+        level, function_name,
+        "\n --- Window dimensions ---"
+        "\n  scale_factor = %.3f,"
+        "\n  window_locical_size = %" PRIu32 "x%" PRIu32 ","
+        "\n  window_max_logical_size = %" PRIu32 "x%" PRIu32
+        "\n  content_locical_size = %" PRIu32 "x%" PRIu32
+        "\n  framebuffer_size = %" PRIu32 "x%" PRIu32,
+        (f64) wdata->scale_factor,
+        wdata->window_logical_width, wdata->window_logical_height,
+        wdata->window_max_logical_width, wdata->window_max_logical_height,
+        wdata->content_logical_width, wdata->content_logical_height,
+        wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height
+    );
+}
+
+static bool display_flush(struct wl_display* display) {
+    bool res = true;
+
+    errno = 0;
+
+    while (wl_display_flush(display) < 0) {
+        if (errno != EAGAIN) {
+            res = false;
+            break;
+        }
+
+        // Socket send buffer is likely full.
+        // Block until the fd becomes writable again
+        struct pollfd fd = { .fd = wl_display_get_fd(display), .events = POLLOUT, .revents = 0 };
+        while (poll(&fd, 1, -1) < 0) {
+            if (errno != EINTR && errno != EAGAIN) {
+                res = false;
+                break;
+            }
+        }
+
+        if (!(fd.revents & POLLOUT)) {
+            // If POLLOUT is not set, the display connection is no longer writable and should be treated as failed.
+            res = false;
+            break;
+        }
+    }
+
+    return res;
 }
 
 //======================================================================================================================
@@ -828,14 +975,7 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
         g_state.backend_resize_window(window, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
     }
 
-    WLCLIENT_LOG_DEBUG(
-        "Framebuffer size:\n  window_locical_size = %" PRIu32 "x%" PRIu32 ","
-        "\n  content_locical_size = %" PRIu32 "x%" PRIu32
-        "\n  framebuffer_size = %" PRIu32 "x%" PRIu32,
-        wdata->window_logical_width, wdata->window_logical_height,
-        wdata->content_logical_width, wdata->content_logical_height,
-        wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height
-    );
+    log_window_data_dimensions(wdata, WLCLIENT_LOG_LEVEL_DEBUG, __func__);
 
     // Acknowledge the current configuration handshake with the compositor.
     xdg_surface_ack_configure(xdg_surface, serial);
@@ -845,6 +985,9 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
     // wl_surface_attach ..
     // update state
     // wl_surface_commit ..
+
+    // zero out the in-flight packet/
+    memset(&wdata->toplevel_config_in_flight_packet, 0, sizeof(wdata->toplevel_config_in_flight_packet));
 }
 
 /**

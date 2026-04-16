@@ -45,7 +45,7 @@ typedef enum wlclient_error_code {
     WLCLIENT_ERROR_OK,
 
     WLCLIENT_ERROR_INIT_FAILED,
-    WLCLIENT_ERROR_EVENT_DISPATCH_FAILED,
+    WLCLIENT_ERROR_EVENT_POLL_FAILED,
     WLCLIENT_ERROR_WINDOW_CREATE_FAILED,
     WLCLIENT_ERROR_EGL_INIT_FAILED,
     WLCLIENT_ERROR_EGL_WINDOW_CREATE_FAILED,
@@ -62,12 +62,12 @@ typedef struct wlclient_allocator {
     char* (*strdup)(const char*);
 } wlclient_allocator;
 
-typedef struct wclient_window_decoration_config {
+typedef struct wlclient_window_decoration_config {
     u32 decor_logical_height; // The height of the window decoration
     u32 edge_logical_thinkness; // The thickness for the edge decorations
-} wclient_window_decoration_config;
+} wlclient_window_decoration_config;
 
-const static wclient_window_decoration_config WCLIENT_NO_DECORATION_CONFIG = {
+const static wlclient_window_decoration_config WCLIENT_NO_DECORATION_CONFIG = {
     .edge_logical_thinkness = 0,
     .decor_logical_height = 0
 };
@@ -90,6 +90,7 @@ typedef struct wlclient_window {
 typedef struct wlclient_window_data {
     bool used;
 
+    // This packet is assembled during configuration changes and it is used in xdg_surface_configure
     struct {
         u32 window_logical_width, window_logical_height;
         u32 window_max_logical_width, window_max_logical_height;

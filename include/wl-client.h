@@ -14,9 +14,11 @@ WLCLIENT_API_EXPORT wlclient_error_code wlclient_create_window(
     wlclient_window* window,
     u32 content_width, u32 content_height,
     const char* title,
-    const wclient_window_decoration_config* decor_cfg
+    const wlclient_window_decoration_config* decor_cfg
 );
 WLCLIENT_API_EXPORT void wlclient_destroy_window(wlclient_window* window);
+
+WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns);
 
 //======================================================================================================================
 // INTERNALS - these expose internal state that is needed for custom backend development.

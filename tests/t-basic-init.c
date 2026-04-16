@@ -14,7 +14,7 @@ void assert_window_state_initialized(
     const wlclient_window* window,
     u32 requested_content_width,
     u32 requested_content_height,
-    const wclient_window_decoration_config* decor_cfg
+    const wlclient_window_decoration_config* decor_cfg
 ) {
     TEST_ASSERT_NOT_NULL(window);
     TEST_ASSERT_TRUE(window->id >= 0);
@@ -27,6 +27,12 @@ void assert_window_state_initialized(
     TEST_ASSERT_NOT_NULL(wdata->surface);
     TEST_ASSERT_NOT_NULL(wdata->xdg_surface);
     TEST_ASSERT_NOT_NULL(wdata->xdg_toplevel);
+
+    // Make sure packet data was cleared after configure
+    TEST_ASSERT_TRUE(wdata->toplevel_config_in_flight_packet.window_logical_width == 0);
+    TEST_ASSERT_TRUE(wdata->toplevel_config_in_flight_packet.window_logical_height == 0);
+    TEST_ASSERT_TRUE(wdata->toplevel_config_in_flight_packet.window_max_logical_width == 0);
+    TEST_ASSERT_TRUE(wdata->toplevel_config_in_flight_packet.window_max_logical_height == 0);
 
     const u32 expected_edge  = (decor_cfg && decor_cfg->edge_logical_thinkness > 0) ? decor_cfg->edge_logical_thinkness : 0;
     const u32 expected_decor = (decor_cfg && decor_cfg->decor_logical_height > 0)  ? decor_cfg->decor_logical_height  : 0;
@@ -128,7 +134,7 @@ i32 basic_wlclient_create_window(void) {
 
     const u32 content_width  = 640;
     const u32 content_height = 480;
-    const wclient_window_decoration_config decor_cfg = {
+    const wlclient_window_decoration_config decor_cfg = {
         .decor_logical_height   = 30,
         .edge_logical_thinkness = 2,
     };
