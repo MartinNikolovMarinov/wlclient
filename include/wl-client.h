@@ -20,6 +20,8 @@ WLCLIENT_API_EXPORT void wlclient_destroy_window(wlclient_window* window);
 
 WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns);
 
+WLCLIENT_API_EXPORT void wlclient_set_close_handler(wlclient_window* window, wlclient_close_handler handler);
+
 //======================================================================================================================
 // INTERNALS - these expose internal state that is needed for custom backend development.
 //======================================================================================================================

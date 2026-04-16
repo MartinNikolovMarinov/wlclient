@@ -451,6 +451,11 @@ poll_failed:
     return WLCLIENT_ERROR_EVENT_POLL_FAILED;
 }
 
+void wlclient_set_close_handler(wlclient_window* window, wlclient_close_handler handler) {
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    wdata->close_handler = handler;
+}
+
 //======================================================================================================================
 // INTERNALS IMPLEMENTATIONS
 //======================================================================================================================
@@ -873,6 +878,8 @@ static void xdg_wm_base_ping(void* data, struct xdg_wm_base* xdg_wm_base, u32 se
 */
 static void xdg_toplevel_close(void* data, struct xdg_toplevel* toplevel) {
     (void)toplevel;
+
+    WLCLIENT_LOG_TRACE("Top level close");
 
     wlclient_window* window = data;
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);

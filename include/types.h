@@ -57,6 +57,8 @@ typedef enum wlclient_error_code {
     WLCLIENT_ERROR_SENTINEL
 } wlclient_error_code;
 
+typedef void (*wlclient_close_handler)(void);
+
 typedef struct wlclient_allocator {
     void* (*alloc)(usize size);
     void (*free)(void* addr);
@@ -126,7 +128,7 @@ typedef struct wlclient_window_data {
     u32 edge_logical_thickness;
 
     // User hooks
-    void (*close_handler)(void);
+    wlclient_close_handler close_handler;
 } wlclient_window_data;
 
 typedef struct wlclient_global_state {
