@@ -79,6 +79,7 @@ set(src_wlclient
 
     src/debug.c
     src/wl-client.c
+    src/wl-utils.c
 
     lib/wayland/xdg-shell-client-protocol.c
     lib/wayland/wayland-client-protocol.c

@@ -70,7 +70,7 @@ i32 main(void) {
     }
 
     while (g_running) {
-        result_code = wlclient_poll_events(0);
+        result_code = wlclient_poll_events(WLCLIENT_SECOND);
         if (result_code != WLCLIENT_ERROR_OK) {
             printf("POLLING FAILED ERROR - %d\n", result_code);
             goto done;

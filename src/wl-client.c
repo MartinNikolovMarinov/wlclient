@@ -1,14 +1,14 @@
-#include <stdbool.h>
 #define _GNU_SOURCE
 
-#include "wl-client.h"
 #include "debug.h"
 #include "macro_magic.h"
+#include "wl-client.h"
+#include "wl-utils.h"
 
-#include <unistd.h>
-#include <string.h>
 #include <errno.h>
-#include <poll.h>
+#include <stdbool.h>
+#include <string.h>
+#include <unistd.h>
 
 #include "xdg-shell-client-protocol.h"
 #include "wayland-client-protocol.h"
@@ -352,8 +352,6 @@ void wlclient_destroy_window(wlclient_window* window) {
 WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns) {
     WLCLIENT_LOG_TRACE("Polling for events...");
 
-    (void) timeout_ns;
-
     bool received_event = false;
     enum { DISPLAY_FD }; // TODO: Will probably need an fd for cursor animation.
     struct pollfd pfds[] =
@@ -392,24 +390,25 @@ WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns) {
                 break;
             }
             if (ret < 0) {
-                return WLCLIENT_ERROR_EVENT_POLL_FAILED;
+                goto poll_failed;
             }
         }
 
-        if (received_event) break;
+        if (received_event) goto done_ok;
 
         bool ok = display_flush(g_state.display);
         if (!ok) {
             wl_display_cancel_read(g_state.display);
-            return WLCLIENT_ERROR_EVENT_POLL_FAILED;
+            goto poll_failed;
         }
 
-        // FIXME: This needs to be wrapped in order to allow timout polling in nanoseconds, or at least just use ppoll!!
-        // Also EINTR and EAGAIN need to be handled!
-        i32 poll_ret = poll(pfds, pfds_size, -1);
-        if (poll_ret < 0) {
+        struct wlclient_poll_result poll_result = wlclient_poll_with_timeout(pfds, pfds_size, timeout_ns);
+        if (poll_result.poll_result < 0) {
             wl_display_cancel_read(g_state.display);
-            return WLCLIENT_ERROR_EVENT_POLL_FAILED;
+            goto poll_failed;
+        }
+        else if (poll_result.timedout) {
+            goto done_ok;
         }
 
         // NOTE: Quote from the manual page:
@@ -420,7 +419,7 @@ WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns) {
             // Read and queue events into their corresponding event queues:
             i32 dispatch_events_ret = wl_display_read_events(g_state.display);
             if (dispatch_events_ret < 0) {
-                return WLCLIENT_ERROR_EVENT_POLL_FAILED;
+                goto poll_failed;
             }
 
             // Dispatch events in a non-blocking manner. The dispatch is what actually fires the listeners.
@@ -429,7 +428,7 @@ WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns) {
                 received_event = true;
             }
             else if (dispatch_pending_ret < 0) {
-                return WLCLIENT_ERROR_EVENT_POLL_FAILED;
+                goto poll_failed;
             }
         }
         else {
@@ -437,7 +436,10 @@ WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns) {
         }
     }
 
+done_ok:
     return WLCLIENT_ERROR_OK;
+poll_failed:
+    return WLCLIENT_ERROR_EVENT_POLL_FAILED;
 }
 
 //======================================================================================================================
