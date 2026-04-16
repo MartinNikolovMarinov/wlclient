@@ -26,8 +26,8 @@ do {                                                                            
 
 #define WLCLIENT_SHM_REQUIRED_VERSION 1
 
-#define WLCLIENT_MIN_CONTENT_WIDTH 100
-#define WLCLIENT_MIN_CONTENT_HEIGHT 100
+#define WLCLIENT_MAX_DECOR_HEIGHT 100
+#define WLCLIENT_MAX_BORDER_THICKNESS 20
 
 #define WLCLIENT_MAX_WINDOW_WIDTH 15360
 #define WLCLIENT_MAX_WINDOW_HEIGHT 8640
@@ -52,6 +52,11 @@ static void remove_and_destroy_input_device_by_id(i32 idx);
 
 static void destroy_window_data(wlclient_window_data* wdata);
 static void log_window_data_dimensions(wlclient_window_data* wdata, wlclient_log_level level, const char* function_name);
+
+static u32 content_to_window_width(const wlclient_window_data* wdata, u32 content_width);
+static u32 content_to_window_height(const wlclient_window_data* wdata, u32 content_height);
+static u32 window_to_content_width(const wlclient_window_data* wdata, u32 window_width);
+static u32 window_to_content_height(const wlclient_window_data* wdata, u32 window_height);
 
 static bool display_flush(struct wl_display* display);
 
@@ -239,21 +244,21 @@ wlclient_error_code wlclient_create_window(
     {
         wdata->decor_logical_height = 0;
         if (decor_cfg && decor_cfg->decor_logical_height > 0) {
-            wdata->decor_logical_height = decor_cfg->decor_logical_height;
+            wdata->decor_logical_height = WLCLIENT_MIN(decor_cfg->decor_logical_height, WLCLIENT_MAX_DECOR_HEIGHT);
         }
 
-        wdata->edge_logical_thinkness = 0;
-        if (decor_cfg && decor_cfg->edge_logical_thinkness > 0) {
-            wdata->edge_logical_thinkness = decor_cfg->edge_logical_thinkness;
+        wdata->edge_logical_thickness = 0;
+        if (decor_cfg && decor_cfg->edge_logical_thickness > 0) {
+            wdata->edge_logical_thickness = WLCLIENT_MIN(decor_cfg->edge_logical_thickness, WLCLIENT_MAX_BORDER_THICKNESS);
         }
 
         wdata->scale_factor = 1.f;
 
-        wdata->content_logical_width = WLCLIENT_MAX(content_width, WLCLIENT_MIN_CONTENT_WIDTH);
-        wdata->content_logical_height = WLCLIENT_MAX(content_height, WLCLIENT_MIN_CONTENT_HEIGHT);
+        wdata->content_logical_width = content_width;
+        wdata->content_logical_height = content_height;
 
-        wdata->window_logical_width = content_width + (2 * wdata->edge_logical_thinkness);
-        wdata->window_logical_height = content_height + (2 * wdata->edge_logical_thinkness) + wdata->decor_logical_height;
+        wdata->window_logical_width = content_to_window_width(wdata, wdata->content_logical_width);
+        wdata->window_logical_height = content_to_window_height(wdata, wdata->content_logical_height);
 
         wdata->window_max_logical_width = WLCLIENT_MAX_WINDOW_WIDTH;
         wdata->window_max_logical_height = WLCLIENT_MAX_WINDOW_HEIGHT;
@@ -290,6 +295,9 @@ wlclient_error_code wlclient_create_window(
         ENSURE_OR_GOTO_ERR(wdata->xdg_toplevel);
 
         xdg_toplevel_set_title(wdata->xdg_toplevel, title);
+
+        // TODO: [MIN_WINDOW_SIZE] allow setting minimin content size and calculate the window size from that.
+        // xdg_toplevel_set_min_size(wdata->xdg_toplevel, (i32)min_w, (i32)min_h);
 
         const static struct xdg_surface_listener xdg_surface_listener = {
             .configure = xdg_surface_configure // synchronizes the in flight packets
@@ -408,6 +416,7 @@ WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns) {
             goto poll_failed;
         }
         else if (poll_result.timedout) {
+            wl_display_cancel_read(g_state.display);
             goto done_ok;
         }
 
@@ -493,6 +502,24 @@ static void set_allocator(wlclient_allocator* allocator) {
         g_state.allocator.free = free;
         g_state.allocator.strdup = strdup;
     }
+}
+
+static u32 content_to_window_width(const wlclient_window_data* wdata, u32 content_width) {
+    return content_width + (2 * wdata->edge_logical_thickness);
+}
+
+static u32 content_to_window_height(const wlclient_window_data* wdata, u32 content_height) {
+    return content_height + (2 * wdata->edge_logical_thickness) + wdata->decor_logical_height;
+}
+
+static u32 window_to_content_width(const wlclient_window_data* wdata, u32 window_width) {
+    u32 chrome = 2 * wdata->edge_logical_thickness;
+    return window_width > chrome ? window_width - chrome : 0;
+}
+
+static u32 window_to_content_height(const wlclient_window_data* wdata, u32 window_height) {
+    u32 chrome = (2 * wdata->edge_logical_thickness) + wdata->decor_logical_height;
+    return window_height > chrome ? window_height - chrome : 0;
 }
 
 static void destroy_all_input_devices(void) {
@@ -953,8 +980,12 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
     wlclient_window* window = data;
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
 
-    wdata->window_max_logical_width = wdata->toplevel_config_in_flight_packet.window_max_logical_width;
-    wdata->window_max_logical_height = wdata->toplevel_config_in_flight_packet.window_max_logical_height;
+    if (wdata->toplevel_config_in_flight_packet.window_max_logical_width > 0) {
+        wdata->window_max_logical_width = wdata->toplevel_config_in_flight_packet.window_max_logical_width;
+    }
+    if (wdata->toplevel_config_in_flight_packet.window_max_logical_height > 0) {
+        wdata->window_max_logical_height = wdata->toplevel_config_in_flight_packet.window_max_logical_height;
+    }
 
     wdata->window_logical_width = WLCLIENT_MIN(
         wdata->toplevel_config_in_flight_packet.window_logical_width,
@@ -965,8 +996,8 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
         wdata->window_max_logical_height
     );
 
-    wdata->content_logical_width = wdata->window_logical_width - (2 * wdata->edge_logical_thinkness);
-    wdata->content_logical_height = wdata->window_logical_height - (2 * wdata->edge_logical_thinkness) - wdata->decor_logical_height;
+    wdata->content_logical_width = window_to_content_width(wdata, wdata->window_logical_width);
+    wdata->content_logical_height = window_to_content_height(wdata, wdata->window_logical_height);
 
     // TODO: [FRACTIONAL_SCALING] f32 rounding
     wdata->framebuffer_pixel_width = (u32)wdata->scale_factor * wdata->content_logical_width;

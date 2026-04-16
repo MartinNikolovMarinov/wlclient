@@ -61,7 +61,7 @@ i32 main(void) {
 
     wlclient_window window;
     wlclient_window_decoration_config dcor_cfg = WCLIENT_NO_DECORATION_CONFIG;
-    dcor_cfg.edge_logical_thinkness = 5;
+    dcor_cfg.edge_logical_thickness = 5;
     dcor_cfg.decor_logical_height = 10;
     result_code = wlclient_create_window(&window, 200, 300, "Example", &dcor_cfg);
     if (result_code != WLCLIENT_ERROR_OK) {

@@ -34,16 +34,14 @@ void assert_window_state_initialized(
     TEST_ASSERT_TRUE(wdata->toplevel_config_in_flight_packet.window_max_logical_width == 0);
     TEST_ASSERT_TRUE(wdata->toplevel_config_in_flight_packet.window_max_logical_height == 0);
 
-    const u32 expected_edge  = (decor_cfg && decor_cfg->edge_logical_thinkness > 0) ? decor_cfg->edge_logical_thinkness : 0;
+    const u32 expected_edge  = (decor_cfg && decor_cfg->edge_logical_thickness > 0) ? decor_cfg->edge_logical_thickness : 0;
     const u32 expected_decor = (decor_cfg && decor_cfg->decor_logical_height > 0)  ? decor_cfg->decor_logical_height  : 0;
 
-    const u32 expected_content_w = requested_content_width;
-    const u32 expected_content_h = requested_content_height;
-    const u32 expected_window_w  = requested_content_width + (2 * expected_edge);
-    const u32 expected_window_h  = requested_content_height + (2 * expected_edge) + expected_decor;
+    const u32 requested_window_w = requested_content_width + (2 * expected_edge);
+    const u32 requested_window_h = requested_content_height + (2 * expected_edge) + expected_decor;
 
     // Decoration config was applied verbatim.
-    TEST_ASSERT_EQUAL_UINT32(expected_edge, wdata->edge_logical_thinkness);
+    TEST_ASSERT_EQUAL_UINT32(expected_edge, wdata->edge_logical_thickness);
     TEST_ASSERT_EQUAL_UINT32(expected_decor, wdata->decor_logical_height);
     TEST_ASSERT_EQUAL(expected_decor == 0, wdata->frame_hide);
 
@@ -51,15 +49,24 @@ void assert_window_state_initialized(
     // fire before the surface is mapped, and we do not map inside create_window.
     TEST_ASSERT_EQUAL_FLOAT(1.f, wdata->scale_factor);
 
-    // Exact matches for window / content / framebuffer dimensions. These assume the
-    // compositor sent 0,0 on the initial xdg_toplevel.configure (standard for a
-    // floating window — tiling WMs may force a size and break these).
-    TEST_ASSERT_EQUAL_UINT32(expected_window_w, wdata->window_logical_width);
-    TEST_ASSERT_EQUAL_UINT32(expected_window_h, wdata->window_logical_height);
-    TEST_ASSERT_EQUAL_UINT32(expected_content_w, wdata->content_logical_width);
-    TEST_ASSERT_EQUAL_UINT32(expected_content_h, wdata->content_logical_height);
-    TEST_ASSERT_EQUAL_UINT32(expected_content_w, wdata->framebuffer_pixel_width);
-    TEST_ASSERT_EQUAL_UINT32(expected_content_h, wdata->framebuffer_pixel_height);
+    // The initial xdg_toplevel.configure is compositor-driven. Some compositors
+    // keep the requested size by sending 0,0; others immediately force a
+    // different logical size. Assert internal consistency instead of an exact
+    // requested-size match.
+    TEST_ASSERT_TRUE(wdata->window_logical_width > 0);
+    TEST_ASSERT_TRUE(wdata->window_logical_height > 0);
+    TEST_ASSERT_TRUE(wdata->window_logical_width >= requested_window_w);
+    TEST_ASSERT_TRUE(wdata->window_logical_height >= requested_window_h);
+    TEST_ASSERT_EQUAL_UINT32(
+        wdata->window_logical_width - (2 * expected_edge),
+        wdata->content_logical_width
+    );
+    TEST_ASSERT_EQUAL_UINT32(
+        wdata->window_logical_height - ((2 * expected_edge) + expected_decor),
+        wdata->content_logical_height
+    );
+    TEST_ASSERT_EQUAL_UINT32(wdata->content_logical_width, wdata->framebuffer_pixel_width);
+    TEST_ASSERT_EQUAL_UINT32(wdata->content_logical_height, wdata->framebuffer_pixel_height);
 
     // Max bounds are environment-dependent (configure_bounds is optional), so only
     // check invariants: window fits inside max, content fits inside window.
@@ -136,7 +143,7 @@ i32 basic_wlclient_create_window(void) {
     const u32 content_height = 480;
     const wlclient_window_decoration_config decor_cfg = {
         .decor_logical_height   = 30,
-        .edge_logical_thinkness = 2,
+        .edge_logical_thickness = 2,
     };
 
     wlclient_window window = { .id = -1 };

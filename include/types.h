@@ -65,11 +65,11 @@ typedef struct wlclient_allocator {
 
 typedef struct wlclient_window_decoration_config {
     u32 decor_logical_height; // The height of the window decoration
-    u32 edge_logical_thinkness; // The thickness for the edge decorations
+    u32 edge_logical_thickness; // The thickness for the edge decorations
 } wlclient_window_decoration_config;
 
 const static wlclient_window_decoration_config WCLIENT_NO_DECORATION_CONFIG = {
-    .edge_logical_thinkness = 0,
+    .edge_logical_thickness = 0,
     .decor_logical_height = 0
 };
 
@@ -123,7 +123,7 @@ typedef struct wlclient_window_data {
     u32 decor_logical_height;
 
     // Logical border thickness for all edges. Immutable after window creation. 0 means no edges.
-    u32 edge_logical_thinkness;
+    u32 edge_logical_thickness;
 
     // User hooks
     void (*close_handler)(void);
