@@ -64,9 +64,9 @@ static u32 window_to_content_height(const wlclient_window_data* wdata, u32 windo
 
 static bool display_flush(struct wl_display* display);
 
-// FIXME: next stuff:
-// static void surface_node_destroy(wlclient_surface_node* node);
+static void surface_node_destroy(wlclient_surface_node* node);
 static void surface_node_destroy_buffers(wlclient_surface_node* node);
+static void surface_node_destroy_pools(wlclient_surface_node* node);
 static void surface_node_create_buffers(wlclient_surface_node* node, u32 pixel_width, u32 pixel_height);
 static void surface_node_change_pool_size(wlclient_surface_node* node, u32 pixel_width, u32 pixel_height);
 static void surface_node_set_non_transperant_region(wlclient_surface_node* node, u32 pixel_width, u32 pixel_height);
@@ -724,11 +724,10 @@ static void destroy_window_data(wlclient_window_data* wdata) {
     if (wdata->xdg_toplevel) xdg_toplevel_destroy(wdata->xdg_toplevel);
     if (wdata->xdg_surface) xdg_surface_destroy(wdata->xdg_surface);
 
-    // FIXME: destroy nodes here later
-    // destroy_surface_node(&wdata->decoration_node);
-    // for (i32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
-    //     destroy_surface_node(&wdata->edge_nodes[i]);
-    // }
+    surface_node_destroy(&wdata->decor_node);
+    for (i32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
+        surface_node_destroy(&wdata->edge_nodes[i]);
+    }
 
     if (wdata->surface) wl_surface_destroy(wdata->surface);
 
@@ -783,6 +782,16 @@ static bool display_flush(struct wl_display* display) {
     return res;
 }
 
+static void surface_node_destroy(wlclient_surface_node* node) {
+    if (!node) return;
+
+    surface_node_destroy_buffers(node);
+    surface_node_destroy_pools(node);
+
+    if (node->subsurface) wl_subsurface_destroy(node->subsurface);
+    if (node->child_surface) wl_surface_destroy(node->child_surface);
+}
+
 static void surface_node_destroy_buffers(wlclient_surface_node* node) {
     if (node->pixel_data) {
         const usize stride = (usize) (node->pixel_width * WLCLIENT_BYTES_PER_PIXEL);
@@ -794,6 +803,25 @@ static void surface_node_destroy_buffers(wlclient_surface_node* node) {
     for (i32 i = 0; i < WLCLIENT_FRAME_BUFFERS_COUNT; i++) {
         if (node->buffers[i]) wl_buffer_destroy(node->buffers[i]);
         node->buffers[i] = NULL;
+        node->ready_states[i] = false;
+    }
+
+    node->pixel_width = 0;
+    node->pixel_height = 0;
+}
+
+static void surface_node_destroy_pools(wlclient_surface_node* node) {
+    if (!node) return;
+
+    // Close the old anonymous file:
+    if (node->anon_file_fd >= 0) {
+        close(node->anon_file_fd);
+        node->anon_file_fd = -1;
+    }
+    // Destroy the old pool:
+    if (node->shm_pool) {
+        wl_shm_pool_destroy(node->shm_pool);
+        node->shm_pool = NULL;
     }
 }
 
@@ -869,16 +897,7 @@ static void surface_node_change_pool_size(wlclient_surface_node* node, u32 pixel
         return;
     }
 
-    // Close the old anonymous file:
-    if (node->anon_file_fd >= 0) {
-        close(node->anon_file_fd);
-        node->anon_file_fd = -1;
-    }
-    // Destroy the old pool:
-    if (node->shm_pool) {
-        wl_shm_pool_destroy(node->shm_pool);
-        node->shm_pool = NULL;
-    }
+    surface_node_destroy_pools(node);
 
     // Create a new anonymous file for the shared pixel buffer:
     node->anon_file_fd = memfd_create("surface-node-fd", 0);
@@ -1521,7 +1540,7 @@ static void surface_preferred_buffer_scale(void* data, struct wl_surface* surfac
     wdata->scale_factor = (f32)factor;
     wl_surface_set_buffer_scale(surface, (i32) wdata->scale_factor);
 
-    // FIXME: what else needs to be notified here ? I guess the backend resize should be triggered.
+    // FIXME: what else needs to be notified here ? I guess a backend scale factor changes should be triggered ?
 }
 
 /**

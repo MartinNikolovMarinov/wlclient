@@ -99,13 +99,13 @@ typedef struct wlclient_surface_node {
     struct wl_surface* child_surface;
     // Subsurface links the child_surface to the main window surface.
     struct wl_subsurface* subsurface;
-    // Decoration dimensions in pixels (logical size * buffer_scale).
-    u32 pixel_width;
-    u32 pixel_height;
     // Shared-memory pool backing all buffers for this surface node.
     struct wl_shm_pool* shm_pool;
     // Buffers attached to child_surface.
     struct wl_buffer* buffers[WLCLIENT_FRAME_BUFFERS_COUNT];
+    // Decoration dimensions in pixels (logical size * buffer_scale).
+    u32 pixel_width;
+    u32 pixel_height;
     // Indicates when the corresponding buffer has been released by the compositor and may be reused.
     bool ready_states[WLCLIENT_FRAME_BUFFERS_COUNT];
     // Anonymous file descriptor backing shm_pool.
