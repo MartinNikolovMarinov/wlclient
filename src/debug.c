@@ -2,41 +2,57 @@
 #include "debug.h"
 
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
 #include <wayland-client-core.h>
 
-static wlclient_log_level g_log_level = WLCLIENT_LOG_LEVEL_WARN;
-static i32 g_log_use_ansi = 1;
+#define WLCLIENT_USE_ANSI // TODO: make a compile option
 
-static const char* wlclient_log_level_name(wlclient_log_level level) {
+#ifdef WLCLIENT_USE_ANSI
+static const bool g_use_ansi = true;
+#else
+static const bool g_use_ansi = false;
+#endif
+
+// TODO: [PERFORMANCE] -- For the final build I should disallow dynamic setting of log levels and instead compile out
+//       logging code that is below the max level.
+static wlclient_log_level g_log_level = WLCLIENT_LOG_LEVEL_WARN;
+
+static void print_failed(const char* predicate, const char* expr_str, const char* file_name, i32 line_number) {
+    fprintf(stderr, "%s expr='%s' at %s:%d", predicate, expr_str, file_name, line_number);
+}
+
+static const char* wlclient_log_level_str(wlclient_log_level level) {
     switch (level) {
-        case WLCLIENT_LOG_LEVEL_TRACE: return "TRACE";
-        case WLCLIENT_LOG_LEVEL_DEBUG: return "DEBUG";
-        case WLCLIENT_LOG_LEVEL_INFO:  return "INFO";
-        case WLCLIENT_LOG_LEVEL_WARN:  return "WARN";
-        case WLCLIENT_LOG_LEVEL_ERROR: return "ERROR";
-        case WLCLIENT_LOG_LEVEL_FATAL: return "FATAL";
+
+#ifdef WLCLIENT_USE_ANSI
+        case WLCLIENT_LOG_LEVEL_TRACE:
+            return ANSI_BOLD_START() ANSI_BRIGHT_GREEN_START() "[TRACE]" ANSI_RESET();
+        case WLCLIENT_LOG_LEVEL_DEBUG:
+            return ANSI_BOLD_START() "[DEBUG]" ANSI_RESET();
+        case WLCLIENT_LOG_LEVEL_INFO:
+             return ANSI_BOLD_START() ANSI_BLUE_START() "[INFO]" ANSI_RESET();
+        case WLCLIENT_LOG_LEVEL_WARN:
+             return ANSI_BOLD_START() ANSI_YELLOW_START() "[WARN]" ANSI_RESET();
+        case WLCLIENT_LOG_LEVEL_ERROR:
+            return ANSI_BOLD_START() ANSI_RED_START() "[ERROR]" ANSI_RESET();
+        case WLCLIENT_LOG_LEVEL_FATAL:
+            return ANSI_BOLD_START() ANSI_BRIGHT_WHITE_START() ANSI_BACKGROUND_RED_START() "[FATAL]" ANSI_RESET();
+
+#else
+        case WLCLIENT_LOG_LEVEL_TRACE: return "[TRACE]";
+        case WLCLIENT_LOG_LEVEL_DEBUG: return "[DEBUG]";
+        case WLCLIENT_LOG_LEVEL_INFO:  return "[INFO]";
+        case WLCLIENT_LOG_LEVEL_WARN:  return "[WARN]";
+        case WLCLIENT_LOG_LEVEL_ERROR: return "[ERROR]";
+        case WLCLIENT_LOG_LEVEL_FATAL: return "[FATAL]";
+#endif
 
         case WLCLIENT_LOG_LEVEL_SENTINEL:
         default:
             return "UNKNOWN";
-    }
-}
-
-static const char* wlclient_log_level_ansi_start(wlclient_log_level level) {
-    switch (level) {
-        case WLCLIENT_LOG_LEVEL_TRACE: return ANSI_BOLD_START() ANSI_BRIGHT_GREEN_START();
-        case WLCLIENT_LOG_LEVEL_DEBUG: return ANSI_BOLD_START();
-        case WLCLIENT_LOG_LEVEL_INFO:  return ANSI_BOLD_START() ANSI_BLUE_START();
-        case WLCLIENT_LOG_LEVEL_WARN:  return ANSI_BOLD_START() ANSI_YELLOW_START();
-        case WLCLIENT_LOG_LEVEL_ERROR: return ANSI_BOLD_START() ANSI_RED_START();
-        case WLCLIENT_LOG_LEVEL_FATAL: return ANSI_BOLD_START() ANSI_BRIGHT_WHITE_START() ANSI_BACKGROUND_RED_START();
-
-        case WLCLIENT_LOG_LEVEL_SENTINEL:
-        default:
-            return "";
     }
 }
 
@@ -52,14 +68,6 @@ wlclient_log_level wlclient_log_get_level(void) {
     return g_log_level;
 }
 
-void wlclient_log_set_use_ansi(i32 use_ansi) {
-    g_log_use_ansi = use_ansi != 0;
-}
-
-i32 wlclient_log_get_use_ansi(void) {
-    return g_log_use_ansi;
-}
-
 void _wlclient_log_message(
     wlclient_log_level level,
     const char* function_name,
@@ -70,20 +78,9 @@ void _wlclient_log_message(
         return;
     }
 
-    if (g_log_use_ansi) {
-        fprintf(
-            stdout,
-            "%s[%s]%s %s() -- ",
-            wlclient_log_level_ansi_start(level),
-            wlclient_log_level_name(level),
-            ANSI_RESET(),
-            function_name
-        );
-    }
-    else {
-        fprintf(stdout, "[%s] %s() -- ", wlclient_log_level_name(level), function_name);
-    }
+    fprintf(stdout, "%s %s() -- ", wlclient_log_level_str(level), function_name);
 
+    // Print message:
     va_list args;
     va_start(args, format);
     vfprintf(stdout, format, args);
@@ -108,10 +105,7 @@ void _wlclient_report_wayland_fatal(
         protocol_err_code = wl_display_get_protocol_error(wl_display, &iface, &protocol_err_id);
     }
 
-    const char* failed_str = g_log_use_ansi
-        ? ANSI_BOLD(ANSI_BRIGHT_WHITE(ANSI_BACKGROUND_RED("[FAILED]")))
-        : "[FAILED]";
-    fprintf(stderr, "%s expr='%s' at %s:%d", failed_str, expr_str, file_name, line_number);
+    print_failed(wlclient_log_level_str(WLCLIENT_LOG_LEVEL_ERROR), expr_str, file_name, line_number);
 
     if (err) {
         fprintf(stderr, " | wayland: errno=%"PRIi32 " (%s)", err, strerror(err));
@@ -131,13 +125,30 @@ void _wlclient_report_wayland_fatal(
     fputc('\n', stderr);
 }
 
-void _wlclient_report_fatal(
+void _wlclient_report_assertion(
     const char* expr_str,
     const char* file_name,
     i32 line_number
 ) {
-    const char* failed_str = g_log_use_ansi
+    const char* failed_str = g_use_ansi
         ? ANSI_BOLD(ANSI_BRIGHT_WHITE(ANSI_BACKGROUND_RED("[ASSERTION]")))
         : "[ASSERTION]";
-    fprintf(stderr, "%s expr='%s' at %s:%d\n", failed_str, expr_str, file_name, line_number);
+    print_failed(failed_str, expr_str, file_name, line_number);
+    fputc('\n', stderr);
 }
+
+void _wlclient_report_error(const char* expr_str, const char* file_name, i32 line_number, const char* format, ...) {
+    print_failed(wlclient_log_level_str(WLCLIENT_LOG_LEVEL_ERROR), expr_str, file_name, line_number);
+
+    if (format) {
+        fprintf(stderr, " -- ");
+        // Print message:
+        va_list args;
+        va_start(args, format);
+        vfprintf(stderr, format, args);
+        va_end(args);
+    }
+
+    fputc('\n', stderr);
+}
+

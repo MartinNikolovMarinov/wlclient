@@ -455,20 +455,20 @@ WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns) {
                 goto done_ok;
             }
             if (ret < 0) {
-                goto poll_failed;
+                ENSURE_OR_GOTO_ERR(false);
             }
         }
 
         bool ok = display_flush(g_state.display);
         if (!ok) {
             wl_display_cancel_read(g_state.display);
-            goto poll_failed;
+            ENSURE_OR_GOTO_ERR(false);
         }
 
         struct wlclient_poll_result poll_result = wlclient_poll_with_timeout(pfds, pfds_size, timeout_ns);
         if (poll_result.poll_result < 0) {
             wl_display_cancel_read(g_state.display);
-            goto poll_failed;
+            ENSURE_OR_GOTO_ERR(false);
         }
         else if (poll_result.timedout) {
             wl_display_cancel_read(g_state.display);
@@ -483,7 +483,7 @@ WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns) {
             // Read and queue events into their corresponding event queues:
             i32 dispatch_events_ret = wl_display_read_events(g_state.display);
             if (dispatch_events_ret < 0) {
-                goto poll_failed;
+                ENSURE_OR_GOTO_ERR(false);
             }
 
             // Dispatch events in a non-blocking manner. The dispatch is what actually fires the listeners.
@@ -492,24 +492,24 @@ WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns) {
                 received_event = true;
             }
             else if (dispatch_pending_ret < 0) {
-                goto poll_failed;
+                ENSURE_OR_GOTO_ERR(false);
             }
         }
         else {
             wl_display_cancel_read(g_state.display);
 
             if (pfds[DISPLAY_FD].revents & (POLLERR | POLLHUP)) {
-                goto poll_failed;
+                ENSURE_OR_GOTO_ERR(false);
             }
         }
     }
 
 done_ok:
     return WLCLIENT_ERROR_OK;
-poll_failed:
-    return WLCLIENT_ERROR_EVENT_POLL_FAILED;
 poll_timeout:
     return WLCLIENT_ERROR_EVENT_POLL_TIMEOUT;
+error:
+    return WLCLIENT_ERROR_EVENT_POLL_FAILED;
 }
 
 void wlclient_set_close_handler(wlclient_window* window, wlclient_close_handler handler) {
@@ -1354,7 +1354,8 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
     xdg_surface_ack_configure(xdg_surface, serial);
 
     // Render decoration node
-    {
+    bool decor_enabled = wdata->decor_logical_height > 0;
+    if (decor_enabled) {
         decor_handle_resize(wdata);
         if (!wdata->frame_hide) {
             surface_node_render(&wdata->decor_node);
@@ -1365,7 +1366,8 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
     }
 
     // Render edges
-    {
+    bool edges_enabled = wdata->edge_logical_thickness > 0;
+    if (edges_enabled) {
         edges_handle_resize(wdata);
         if (!wdata->frame_hide) {
             for (u32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {

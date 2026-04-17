@@ -21,8 +21,6 @@ typedef enum wlclient_log_level {
 
 WLCLIENT_API_EXPORT void wlclient_log_set_level(wlclient_log_level level);
 WLCLIENT_API_EXPORT wlclient_log_level wlclient_log_get_level(void);
-WLCLIENT_API_EXPORT void wlclient_log_set_use_ansi(i32 use_ansi);
-WLCLIENT_API_EXPORT i32 wlclient_log_get_use_ansi(void);
 
 WLCLIENT_API_INTERNAL void _wlclient_log_message(
     wlclient_log_level level,
@@ -45,11 +43,19 @@ WLCLIENT_API_INTERNAL void _wlclient_report_wayland_fatal(
     i32 line_number
 );
 
-WLCLIENT_API_INTERNAL void _wlclient_report_fatal(
+WLCLIENT_API_INTERNAL void _wlclient_report_assertion(
     const char* expr_str,
     const char* file_name,
     i32 line_number
 );
+
+WLCLIENT_API_INTERNAL void _wlclient_report_error(
+    const char* expr_str,
+    const char* file_name,
+    i32 line_number,
+    const char* format,
+    ...
+) PRINTF_LIKE(4, 5);
 
 #if defined(WLCLIENT_ASSERT_ENABLED) && WLCLIENT_ASSERT_ENABLED == 1
 
@@ -57,7 +63,7 @@ WLCLIENT_API_INTERNAL void _wlclient_report_fatal(
 do {                                                                              \
     if (!(expr)) {                                                                \
         _wlclient_log_message(WLCLIENT_LOG_LEVEL_FATAL, __func__, ##__VA_ARGS__); \
-        _wlclient_report_fatal(#expr, __FILE__, __LINE__);                        \
+        _wlclient_report_assertion(#expr, __FILE__, __LINE__);                    \
         abort();                                                                  \
     }                                                                             \
 }                                                                                 \
@@ -73,7 +79,7 @@ while(0)
 do {                                                                              \
     if (!(expr)) {                                                                \
         _wlclient_log_message(WLCLIENT_LOG_LEVEL_FATAL, __func__, ##__VA_ARGS__); \
-        _wlclient_report_fatal(#expr, __FILE__, __LINE__);                        \
+        _wlclient_report_assertion(#expr, __FILE__, __LINE__);                    \
         abort();                                                                  \
     }                                                                             \
 }                                                                                 \
