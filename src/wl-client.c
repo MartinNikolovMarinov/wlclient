@@ -242,8 +242,15 @@ wlclient_error_code wlclient_create_window(
     i32 ret;
     wlclient_window_data* wdata = NULL;
 
-    WLCLIENT_ASSERT(window, "window argument is null");
-    WLCLIENT_ASSERT(title, "title argument is null");
+    // Input Validation
+    {
+        WLCLIENT_PANIC(window, "window argument is null");
+        WLCLIENT_PANIC(title, "title argument is null");
+        WLCLIENT_PANIC(
+            (decor_cfg->decor_logical_height == 0) == (decor_cfg->edge_logical_thickness == 0),
+            "Decoration and edges should either both be 0 or both have a value"
+        );
+    }
 
     WLCLIENT_LOG_DEBUG("Creating window (%"PRIi32"x%"PRIi32")", content_width, content_height);
 
@@ -979,6 +986,8 @@ static void decor_update_position(wlclient_window_data* wdata) {
 }
 
 static void decor_handle_resize(wlclient_window_data* wdata) {
+    if (wdata->decor_logical_height == 0) return;
+
     u32 decor_pixel_width = wdata->content_logical_width * (u32)wdata->scale_factor;
     u32 decor_pixel_height = wdata->decor_logical_height * (u32)wdata->scale_factor;
     surface_node_change_pool_size(&wdata->decor_node, decor_pixel_width, decor_pixel_height);
@@ -1030,6 +1039,8 @@ static void edges_update_position(wlclient_window_data* wdata) {
 }
 
 static void edges_handle_resize(wlclient_window_data* wdata) {
+    if (wdata->edge_logical_thickness == 0) return;
+
     u32 edge_thickness = wdata->edge_logical_thickness * (u32)wdata->scale_factor;
     u32 edge_w = (wdata->content_logical_width + 2 * wdata->edge_logical_thickness) * (u32)wdata->scale_factor;
     u32 edge_h = (wdata->content_logical_height + wdata->decor_logical_height) * (u32)wdata->scale_factor;
@@ -1251,13 +1262,13 @@ static void xdg_toplevel_configure(void* data, struct xdg_toplevel* toplevel, i3
 
     WLCLIENT_LOG_DEBUG("Top level configure size = %" PRIi32 "x%" PRIi32 "", width, height);
 
+    WLCLIENT_ASSERT(width >= 0, "[SANITY_CHECK_FAILED] assumption about width being always positive is wrong.");
+    WLCLIENT_ASSERT(height >= 0, "[SANITY_CHECK_FAILED] assumption about height being always positive is wrong.");
+
     wlclient_window* window = data;
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
-    u32 w = width > 0 ? (u32)width : wdata->window_logical_width;
-    u32 h = height > 0 ? (u32)height : wdata->window_logical_height;
-
-    wdata->toplevel_config_in_flight_packet.window_logical_width = w;
-    wdata->toplevel_config_in_flight_packet.window_logical_height = h;
+    wdata->toplevel_config_in_flight_packet.window_logical_width = (u32) width;
+    wdata->toplevel_config_in_flight_packet.window_logical_height = (u32) height;
 }
 
 /**
@@ -1326,6 +1337,10 @@ static void xdg_toplevel_configure_wm_capabilities(void* data, struct xdg_toplev
 static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u32 serial) {
     WLCLIENT_LOG_DEBUG("Surface configure serial: %" PRIu32, serial);
 
+    //     Zero-size cascade in xdg_surface_configure (1339-1346, 1408): in-flight packet zeroed every call; if only
+    //   xdg_surface.configure fires without xdg_toplevel.configure, window_logical_width/height become 0, propagating to
+    //   framebuffer and SHM pool size. Adjacent max-size code already guards with > 0 — the fix pattern is right there.
+
     wlclient_window* window = data;
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
 
@@ -1336,14 +1351,18 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
         wdata->window_max_logical_height = wdata->toplevel_config_in_flight_packet.window_max_logical_height;
     }
 
-    wdata->window_logical_width = WLCLIENT_MIN(
-        wdata->toplevel_config_in_flight_packet.window_logical_width,
-        wdata->window_max_logical_width
-    );
-    wdata->window_logical_height = WLCLIENT_MIN(
-        wdata->toplevel_config_in_flight_packet.window_logical_height,
-        wdata->window_max_logical_height
-    );
+    if (wdata->toplevel_config_in_flight_packet.window_logical_width > 0) {
+        wdata->window_logical_width = WLCLIENT_MIN(
+            wdata->toplevel_config_in_flight_packet.window_logical_width,
+            wdata->window_max_logical_width
+        );
+    }
+    if (wdata->toplevel_config_in_flight_packet.window_logical_height > 0) {
+        wdata->window_logical_height = WLCLIENT_MIN(
+            wdata->toplevel_config_in_flight_packet.window_logical_height,
+            wdata->window_max_logical_height
+        );
+    }
 
     wdata->content_logical_width = window_to_content_width(wdata, wdata->window_logical_width);
     wdata->content_logical_height = window_to_content_height(wdata, wdata->window_logical_height);
@@ -1373,8 +1392,7 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
     xdg_surface_ack_configure(xdg_surface, serial);
 
     // Render decoration node
-    bool decor_enabled = wdata->decor_logical_height > 0;
-    if (decor_enabled) {
+    {
         decor_handle_resize(wdata);
         if (!wdata->frame_hide) {
             surface_node_render(&wdata->decor_node);
@@ -1385,8 +1403,7 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
     }
 
     // Render edges
-    bool edges_enabled = wdata->edge_logical_thickness > 0;
-    if (edges_enabled) {
+    {
         edges_handle_resize(wdata);
         if (!wdata->frame_hide) {
             for (u32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
