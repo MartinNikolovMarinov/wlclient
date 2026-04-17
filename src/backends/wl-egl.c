@@ -10,6 +10,8 @@
 #include <string.h>
 #include <wayland-egl.h>
 
+// FIXME: This code needs to be reviewed next..
+
 static EGLDisplay g_egl_display = EGL_NO_DISPLAY;
 static EGLConfig g_egl_config = NULL;
 
@@ -243,7 +245,6 @@ static void egl_shutdown(void) {
 
     WLCLIENT_LOG_DEBUG("EGL Shutdown");
 }
-
 
 //======================================================================================================================
 // Helper Implementations
