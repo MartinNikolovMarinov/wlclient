@@ -38,7 +38,7 @@ typedef u32             rune; /* Runes represent a single UTF-32 encoded charact
 
 #define WLCLIENT_WINDOWS_COUNT 5
 #define WLCLIENT_BYTES_PER_PIXEL 4
-#define WLCLIENT_FRAME_BUFFERS_COUNT 2
+#define WLCLIENT_FRAMEBUFFERS_COUNT 2
 #define WLCLIENT_MAX_INPUT_DEVICES 5
 
 typedef enum wlclient_error_code {
@@ -48,6 +48,8 @@ typedef enum wlclient_error_code {
     WLCLIENT_ERROR_EVENT_POLL_FAILED,
     WLCLIENT_ERROR_EVENT_POLL_TIMEOUT,
     WLCLIENT_ERROR_WINDOW_CREATE_FAILED,
+    WLCLIENT_ERROR_WINDOW_TOGGLE_DECOR_FAILED,
+
     WLCLIENT_ERROR_EGL_INIT_FAILED,
     WLCLIENT_ERROR_EGL_WINDOW_CREATE_FAILED,
     WLCLIENT_ERROR_EGL_SET_CONTEXT_FAILED,
@@ -65,14 +67,22 @@ typedef struct wlclient_allocator {
     char* (*strdup)(const char*);
 } wlclient_allocator;
 
+typedef struct wlclient_color {
+    u8 r, g, b, a;
+} wlclient_color;
+
 typedef struct wlclient_window_decoration_config {
-    u32 decor_logical_height; // The height of the window decoration
-    u32 edge_logical_thickness; // The thickness for the edge decorations
+    u32 decor_logical_height; // The height of the window decoration. 0 means no decoration.
+    u32 edge_logical_thickness; // The thickness for the edge decorations. 0 means no edges.
+    wlclient_color edge_color; // Colors for the edges (i.e. window border colors)
+    wlclient_color decor_color; // Colors for the decoration
 } wlclient_window_decoration_config;
 
 const static wlclient_window_decoration_config WLCLIENT_NO_DECORATION_CONFIG = {
     .edge_logical_thickness = 0,
-    .decor_logical_height = 0
+    .decor_logical_height = 0,
+    .edge_color = {0},
+    .decor_color = {0}
 };
 
 typedef struct wlclient_input_device {
@@ -102,12 +112,12 @@ typedef struct wlclient_surface_node {
     // Shared-memory pool backing all buffers for this surface node.
     struct wl_shm_pool* shm_pool;
     // Buffers attached to child_surface.
-    struct wl_buffer* buffers[WLCLIENT_FRAME_BUFFERS_COUNT];
+    struct wl_buffer* buffers[WLCLIENT_FRAMEBUFFERS_COUNT];
     // Decoration dimensions in pixels (logical size * buffer_scale).
     u32 pixel_width;
     u32 pixel_height;
     // Indicates when the corresponding buffer has been released by the compositor and may be reused.
-    bool ready_states[WLCLIENT_FRAME_BUFFERS_COUNT];
+    bool ready_states[WLCLIENT_FRAMEBUFFERS_COUNT];
     // Anonymous file descriptor backing shm_pool.
     i32 anon_file_fd;
     // A flat pixel storage for all buffers in shm_pool. Memory mapped from the anonymous file.
@@ -147,15 +157,17 @@ typedef struct wlclient_window_data {
     struct xdg_toplevel* xdg_toplevel;
 
     // Should the frame around the content be visible.
-    bool frame_hide;
+    bool csd_hidden;
 
     // Logical decoration height in surface coordinates. Immutable after window creation.
     u32 decor_logical_height;
+    wlclient_color decor_color;
     // The node for the client side decoration. Positioned above the main surface to render the title bar.
     wlclient_surface_node decor_node;
 
-    // Logical border thickness for all edges. Immutable after window creation. 0 means no edges.
+    // Logical border thickness for all edges. Immutable after window creation.
     u32 edge_logical_thickness;
+    wlclient_color edge_color;
     // These are the surface nodes that are used to provide hit regions for interactive window resizing.
     // These are rendered around the window as boarders.
     wlclient_surface_node edge_nodes[WLCLIENT_EDGE_COUNT];
@@ -167,7 +179,7 @@ typedef struct wlclient_window_data {
 typedef struct wlclient_global_state {
     wlclient_allocator allocator;
 
-    // The object thar represents a client connection to a Wayland compositor.
+    // The object that represents a client connection to a Wayland compositor.
     struct wl_display* display;
     // The registry object is the compositor’s global object list. Exposes all global interfaces provided by the compositor.
     struct wl_registry* registry;

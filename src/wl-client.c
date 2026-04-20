@@ -2,6 +2,7 @@
 
 #include "debug.h"
 #include "macro_magic.h"
+#include "types.h"
 #include "wl-client.h"
 #include "wl-utils.h"
 
@@ -19,6 +20,7 @@
 #include <wayland-util.h>
 
 // TODO: [FRACTIONAL_SCALING] Every calculation that uses scaling will have to change when fractional scaling is introduced.
+// TODO: [ALPHA_BLENDING] The decoration alpha blending is broken, or possibly not configured; needs investigation.
 
 #define ENSURE_OR_GOTO_ERR(expr)                                                    \
 do {                                                                                \
@@ -56,6 +58,7 @@ static void remove_and_destroy_input_device_by_id(i32 idx);
 
 static void destroy_window_data(wlclient_window_data* wdata);
 static void log_window_data_dimensions(wlclient_window_data* wdata, wlclient_log_level level, const char* function_name);
+static void apply_window_geometry(wlclient_window_data* wdata);
 
 static u32 content_to_window_width(const wlclient_window_data* wdata, u32 content_width);
 static u32 content_to_window_height(const wlclient_window_data* wdata, u32 content_height);
@@ -70,13 +73,17 @@ static void surface_node_destroy_pools(wlclient_surface_node* node);
 static void surface_node_create_buffers(wlclient_surface_node* node, u32 pixel_width, u32 pixel_height);
 static void surface_node_change_pool_size(wlclient_surface_node* node, u32 pixel_width, u32 pixel_height);
 static void surface_node_set_non_transperant_region(wlclient_surface_node* node, u32 pixel_width, u32 pixel_height);
-static void surface_node_render(wlclient_surface_node* node);
+static void surface_node_render(wlclient_surface_node* node, wlclient_color color);
 
 static void decor_update_position(wlclient_window_data* wdata);
 static void decor_handle_resize(wlclient_window_data* wdata);
+static void decor_render(wlclient_window_data* wdata);
+static void decor_hide(wlclient_window_data* wdata);
 
 static void edges_update_position(wlclient_window_data* wdata);
 static void edges_handle_resize(wlclient_window_data* wdata);
+static void edges_render(wlclient_window_data* wdata);
+static void edges_hide(wlclient_window_data* wdata);
 
 //======================================================================================================================
 // Wayland Handlers
@@ -279,6 +286,9 @@ wlclient_error_code wlclient_create_window(
             wdata->edge_logical_thickness = WLCLIENT_MIN(decor_cfg->edge_logical_thickness, WLCLIENT_MAX_BORDER_THICKNESS);
         }
 
+        wdata->decor_color = decor_cfg->decor_color;
+        wdata->edge_color = decor_cfg->edge_color;
+
         wdata->scale_factor = 1.f;
 
         wdata->content_logical_width = content_width;
@@ -294,7 +304,7 @@ wlclient_error_code wlclient_create_window(
         wdata->framebuffer_pixel_height = (u32)wdata->scale_factor * wdata->content_logical_height;
 
         wdata->used = true;
-        wdata->frame_hide = !(wdata->decor_logical_height > 0);
+        wdata->csd_hidden = !(wdata->decor_logical_height > 0);
 
         // Set the file descriptors for each surface node to an explicitly wrong value.
         wdata->decor_node.anon_file_fd = -1;
@@ -346,7 +356,7 @@ wlclient_error_code wlclient_create_window(
         ENSURE_OR_GOTO_ERR(ret == 0);
     }
 
-    if (!wdata->frame_hide) {
+    if (!wdata->csd_hidden) {
         // Create the decoration child surface and subsurface after the parent has its toplevel role.
         {
             wdata->decor_node.child_surface = wl_compositor_create_surface(g_state.compositor);
@@ -397,8 +407,6 @@ wlclient_error_code wlclient_create_window(
 
     // FIXME: Ensure that the decor node and edge nodes exist.
 
-    log_window_data_dimensions(wdata, WLCLIENT_LOG_LEVEL_DEBUG, __func__);
-
     WLCLIENT_LOG_DEBUG("Window creation done");
     return WLCLIENT_ERROR_OK;
 
@@ -420,6 +428,60 @@ void wlclient_destroy_window(wlclient_window* window) {
     destroy_window_data(wdata);
     window->id = -1;
     WLCLIENT_LOG_DEBUG("Destroyed");
+}
+
+void wlclient_get_framebuffer(wlclient_window* window, u32* w, u32* h) {
+    WLCLIENT_ASSERT(window, "window argument is null");
+    WLCLIENT_ASSERT(w, "w argument is null");
+    WLCLIENT_ASSERT(h, "h argument is null");
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    *w = wdata->framebuffer_pixel_width;
+    *h = wdata->framebuffer_pixel_height;
+}
+
+wlclient_error_code wlclient_toggle_window_decor(wlclient_window* window) {
+    if (!window || window->id < 0) return WLCLIENT_ERROR_WINDOW_TOGGLE_DECOR_FAILED;
+
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    WLCLIENT_ASSERT(wdata->used, "Attempt to toggle window that is unused");
+
+    if (wdata->decor_logical_height == 0 || wdata->edge_logical_thickness == 0) {
+        WLCLIENT_LOG_WARN("Can't toggle window because its decorations are not configured");
+        return WLCLIENT_ERROR_WINDOW_TOGGLE_DECOR_FAILED;
+    }
+
+    wdata->csd_hidden = !wdata->csd_hidden;
+
+    WLCLIENT_LOG_DEBUG("Toggle window(id=%" PRIi32") to client_side_decorations_state=%s",
+        window->id,
+        wdata->csd_hidden ? "hidden" : "visible"
+    );
+
+    if (wdata->csd_hidden) {
+        wdata->content_logical_width = wdata->window_logical_width;
+        wdata->content_logical_height = wdata->window_logical_height;
+        wdata->framebuffer_pixel_width = (u32)wdata->scale_factor * wdata->content_logical_width;
+        wdata->framebuffer_pixel_height = (u32)wdata->scale_factor * wdata->content_logical_height;
+        apply_window_geometry(wdata);
+        decor_hide(wdata);
+        edges_hide(wdata);
+    }
+    else {
+        wdata->content_logical_width = window_to_content_width(wdata, wdata->content_logical_width);
+        wdata->content_logical_height = window_to_content_height(wdata, wdata->content_logical_height);
+        wdata->framebuffer_pixel_width = (u32)wdata->scale_factor * wdata->content_logical_width;
+        wdata->framebuffer_pixel_height = (u32)wdata->scale_factor * wdata->content_logical_height;
+        apply_window_geometry(wdata);
+        decor_render(wdata);
+        edges_render(wdata);
+    }
+
+    // Notify the backend for a resize event:
+    if (g_state.backend_resize_window && wdata->used) {
+        g_state.backend_resize_window(window, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
+    }
+
+    return WLCLIENT_ERROR_OK;
 }
 
 WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns) {
@@ -506,6 +568,7 @@ WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns) {
             wl_display_cancel_read(g_state.display);
 
             if (pfds[DISPLAY_FD].revents & (POLLERR | POLLHUP)) {
+                // Display connection disconnect.
                 ENSURE_OR_GOTO_ERR(false);
             }
         }
@@ -586,13 +649,13 @@ static u32 content_to_window_height(const wlclient_window_data* wdata, u32 conte
 }
 
 static u32 window_to_content_width(const wlclient_window_data* wdata, u32 window_width) {
-    u32 chrome = 2 * wdata->edge_logical_thickness;
-    return window_width > chrome ? window_width - chrome : 0;
+    u32 csd_width = 2 * wdata->edge_logical_thickness;
+    return window_width > csd_width ? window_width - csd_width : 0;
 }
 
 static u32 window_to_content_height(const wlclient_window_data* wdata, u32 window_height) {
-    u32 chrome = (2 * wdata->edge_logical_thickness) + wdata->decor_logical_height;
-    return window_height > chrome ? window_height - chrome : 0;
+    u32 csd_height = (2 * wdata->edge_logical_thickness) + wdata->decor_logical_height;
+    return window_height > csd_height ? window_height - csd_height : 0;
 }
 
 static void destroy_all_input_devices(void) {
@@ -746,16 +809,35 @@ static void log_window_data_dimensions(wlclient_window_data* wdata, wlclient_log
         level, function_name,
         "\n --- Window dimensions ---"
         "\n  scale_factor = %.3f,"
+        "\n  csd = %s,"
         "\n  window_locical_size = %" PRIu32 "x%" PRIu32 ","
         "\n  window_max_logical_size = %" PRIu32 "x%" PRIu32
         "\n  content_locical_size = %" PRIu32 "x%" PRIu32
         "\n  framebuffer_size = %" PRIu32 "x%" PRIu32,
         (f64) wdata->scale_factor,
+        wdata->csd_hidden ? "hidden" : "visible",
         wdata->window_logical_width, wdata->window_logical_height,
         wdata->window_max_logical_width, wdata->window_max_logical_height,
         wdata->content_logical_width, wdata->content_logical_height,
         wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height
     );
+}
+
+static void apply_window_geometry(wlclient_window_data* wdata) {
+    i32 x, y, w, h;
+    if (wdata->csd_hidden) {
+        x = 0;
+        y = 0;
+        w = (i32) wdata->window_logical_width;
+        h = (i32) wdata->window_logical_height;
+    }
+    else {
+        x = -(i32) wdata->edge_logical_thickness;
+        y = -(i32) wdata->edge_logical_thickness - (i32) wdata->decor_logical_height;
+        w = (i32) wdata->window_logical_width;
+        h = (i32) wdata->window_logical_height;
+    }
+    xdg_surface_set_window_geometry(wdata->xdg_surface, x, y, w, h);
 }
 
 static bool display_flush(struct wl_display* display) {
@@ -802,12 +884,12 @@ static void surface_node_destroy(wlclient_surface_node* node) {
 static void surface_node_destroy_buffers(wlclient_surface_node* node) {
     if (node->pixel_data) {
         const usize stride = (usize) (node->pixel_width * WLCLIENT_BYTES_PER_PIXEL);
-        usize map_size = stride * (usize) node->pixel_height * WLCLIENT_FRAME_BUFFERS_COUNT;
+        usize map_size = stride * (usize) node->pixel_height * WLCLIENT_FRAMEBUFFERS_COUNT;
         munmap(node->pixel_data, map_size);
         node->pixel_data = NULL;
     }
 
-    for (i32 i = 0; i < WLCLIENT_FRAME_BUFFERS_COUNT; i++) {
+    for (i32 i = 0; i < WLCLIENT_FRAMEBUFFERS_COUNT; i++) {
         if (node->buffers[i]) wl_buffer_destroy(node->buffers[i]);
         node->buffers[i] = NULL;
         node->ready_states[i] = false;
@@ -839,7 +921,7 @@ static void surface_node_create_buffers(wlclient_surface_node* node, u32 pixel_w
 
     u32 stride = pixel_width * WLCLIENT_BYTES_PER_PIXEL;
     u32 single_buffer_size = stride * pixel_height;
-    u32 pool_size = single_buffer_size * WLCLIENT_FRAME_BUFFERS_COUNT;
+    u32 pool_size = single_buffer_size * WLCLIENT_FRAMEBUFFERS_COUNT;
     node->pixel_data = mmap(
         NULL,
         (u32) pool_size,
@@ -854,7 +936,7 @@ static void surface_node_create_buffers(wlclient_surface_node* node, u32 pixel_w
     );
     memset(node->pixel_data, 0, pool_size);
 
-    for (i32 i = 0; i < WLCLIENT_FRAME_BUFFERS_COUNT; i++) {
+    for (i32 i = 0; i < WLCLIENT_FRAMEBUFFERS_COUNT; i++) {
         i32 offset = i * (i32)single_buffer_size;
 
         WLCLIENT_ASSERT(!node->buffers[i], "[LEAK] All node buffers should have been destroyed.");
@@ -895,8 +977,8 @@ static void surface_node_change_pool_size(wlclient_surface_node* node, u32 pixel
     u32 old_stride = node->pixel_width * WLCLIENT_BYTES_PER_PIXEL;
     u32 new_stride = pixel_width * WLCLIENT_BYTES_PER_PIXEL;
 
-    u32 old_size = old_stride * node->pixel_height * WLCLIENT_FRAME_BUFFERS_COUNT;
-    u32 new_size = new_stride * pixel_height * WLCLIENT_FRAME_BUFFERS_COUNT;
+    u32 old_size = old_stride * node->pixel_height * WLCLIENT_FRAMEBUFFERS_COUNT;
+    u32 new_size = new_stride * pixel_height * WLCLIENT_FRAMEBUFFERS_COUNT;
 
     bool should_recreate = (node->anon_file_fd < 0) || (old_size < new_size);
     if (!should_recreate) {
@@ -929,13 +1011,13 @@ static void surface_node_set_non_transperant_region(wlclient_surface_node* node,
     wl_region_destroy(empty_region);
 }
 
-static void surface_node_render(wlclient_surface_node* node) {
-    WLCLIENT_LOG_DEBUG("Render surface node called...");
+static void surface_node_render(wlclient_surface_node* node,  wlclient_color color) {
+    WLCLIENT_LOG_TRACE("Render surface node called...");
 
     // Find a ready buffer
     i32 buf_idx = -1;
     {
-        for (i32 i = 0; i < WLCLIENT_FRAME_BUFFERS_COUNT; i++) {
+        for (i32 i = 0; i < WLCLIENT_FRAMEBUFFERS_COUNT; i++) {
             if (node->ready_states[i]) {
                 buf_idx = i;
                 break;
@@ -943,29 +1025,26 @@ static void surface_node_render(wlclient_surface_node* node) {
         }
     }
     if (buf_idx < 0) {
-        WLCLIENT_LOG_DEBUG("No available buffer for surface node rendering...");
+        WLCLIENT_LOG_WARN("No available buffer for surface node rendering...");
         WLCLIENT_ASSERT(false, "TODO: Can I assume this?");
         return;
     }
 
-    WLCLIENT_LOG_DEBUG("Using buffer at index %"PRIi32, buf_idx);
+    WLCLIENT_LOG_TRACE("Using buffer at index %"PRIi32, buf_idx);
 
-    // TODO: How do I hook this to something that will do the actual correct colors/shapes ?
+    // TODO: [PERFORMANCE] This loop should be avoided if no actual width/height change happend for surface nodes?
     {
         u32 stride = node->pixel_width * WLCLIENT_BYTES_PER_PIXEL;
         u32 single_buffer_size = stride * node->pixel_height;
         u32 byte_offset = (u32) buf_idx * single_buffer_size;
         u32 pixel_count = node->pixel_width * node->pixel_height;
         u8* pixels = node->pixel_data + byte_offset;
-        u8 b = (u8) (rand() & 255);
-        u8 g = (u8) (rand() & 255);
-        u8 r = (u8) (rand() & 255);
         for (u32 p = 0; p < pixel_count; p++) {
             u32 idx = p * WLCLIENT_BYTES_PER_PIXEL;
-            pixels[idx + 0] = b;
-            pixels[idx + 1] = g;
-            pixels[idx + 2] = r;
-            pixels[idx + 3] = 255;
+            pixels[idx + 0] = color.b;
+            pixels[idx + 1] = color.g;
+            pixels[idx + 2] = color.r;
+            pixels[idx + 3] = color.a;
         }
     }
 
@@ -974,7 +1053,7 @@ static void surface_node_render(wlclient_surface_node* node) {
     wl_surface_damage_buffer(node->child_surface, 0, 0, (i32) node->pixel_width, (i32) node->pixel_height);
     wl_surface_commit(node->child_surface);
 
-    WLCLIENT_LOG_DEBUG("Render surface node done.");
+    WLCLIENT_LOG_TRACE("Render surface node done.");
 }
 
 /**
@@ -988,20 +1067,44 @@ static void decor_update_position(wlclient_window_data* wdata) {
 static void decor_handle_resize(wlclient_window_data* wdata) {
     if (wdata->decor_logical_height == 0) return;
 
-    u32 decor_pixel_width = wdata->content_logical_width * (u32)wdata->scale_factor;
-    u32 decor_pixel_height = wdata->decor_logical_height * (u32)wdata->scale_factor;
-    surface_node_change_pool_size(&wdata->decor_node, decor_pixel_width, decor_pixel_height);
+    u32 new_decor_pixel_width = wdata->content_logical_width * (u32)wdata->scale_factor;
+    u32 new_decor_pixel_height = wdata->decor_logical_height * (u32)wdata->scale_factor;
+
+    bool no_resize_needed = new_decor_pixel_width == wdata->decor_node.pixel_width &&
+                            new_decor_pixel_height == wdata->decor_node.pixel_height;
+    if (no_resize_needed) {
+        // Exactly the same dimensions -- no resize needed
+        return;
+    }
+
+    surface_node_change_pool_size(&wdata->decor_node, new_decor_pixel_width, new_decor_pixel_height);
 
     // Re-create the buffers:
     surface_node_destroy_buffers(&wdata->decor_node);
-    surface_node_create_buffers(&wdata->decor_node, decor_pixel_width, decor_pixel_height);
+    surface_node_create_buffers(&wdata->decor_node, new_decor_pixel_width, new_decor_pixel_height);
 
-    surface_node_set_non_transperant_region(&wdata->decor_node, decor_pixel_width, decor_pixel_height);
+    surface_node_set_non_transperant_region(&wdata->decor_node, new_decor_pixel_width, new_decor_pixel_height);
 
-    wdata->decor_node.pixel_width = decor_pixel_width;
-    wdata->decor_node.pixel_height = decor_pixel_height;
+    wdata->decor_node.pixel_width = new_decor_pixel_width;
+    wdata->decor_node.pixel_height = new_decor_pixel_height;
 
     decor_update_position(wdata); // might not be necessary
+}
+
+static void decor_render(wlclient_window_data* wdata) {
+    decor_handle_resize(wdata);
+    if (!wdata->csd_hidden) {
+        surface_node_render(&wdata->decor_node, wdata->decor_color);
+    }
+    else {
+        WLCLIENT_LOG_DEBUG("Decoration hidden; will not render");
+    }
+}
+
+static void decor_hide(wlclient_window_data* wdata) {
+    // Detach decoration surface:
+    wl_surface_attach(wdata->decor_node.child_surface, NULL, 0, 0);
+    wl_surface_commit(wdata->decor_node.child_surface);
 }
 
 /**
@@ -1057,22 +1160,50 @@ static void edges_handle_resize(wlclient_window_data* wdata) {
 
     for (u32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
         wlclient_surface_node* edge_node = &wdata->edge_nodes[i];
-        u32 edge_pixel_width = edge_sizes[i].pixel_width;
-        u32 edge_pixel_height = edge_sizes[i].pixel_height;
+        u32 new_edge_pixel_width = edge_sizes[i].pixel_width;
+        u32 new_edge_pixel_height = edge_sizes[i].pixel_height;
 
-        surface_node_change_pool_size(edge_node, edge_pixel_width, edge_pixel_height);
+        bool no_resize_needed = new_edge_pixel_width == edge_node->pixel_width &&
+                                new_edge_pixel_height == edge_node->pixel_height;
+        if (no_resize_needed) {
+            // Exactly the same dimensions -- no resize needed
+            continue;
+        }
+
+        surface_node_change_pool_size(edge_node, new_edge_pixel_width, new_edge_pixel_height);
 
         // Re-create the buffers:
         surface_node_destroy_buffers(edge_node);
-        surface_node_create_buffers(edge_node, edge_pixel_width, edge_pixel_height);
+        surface_node_create_buffers(edge_node, new_edge_pixel_width, new_edge_pixel_height);
 
-        surface_node_set_non_transperant_region(edge_node, edge_pixel_width, edge_pixel_height);
+        surface_node_set_non_transperant_region(edge_node, new_edge_pixel_width, new_edge_pixel_height);
 
-        edge_node->pixel_width = edge_pixel_width;
-        edge_node->pixel_height = edge_pixel_height;
+        edge_node->pixel_width = new_edge_pixel_width;
+        edge_node->pixel_height = new_edge_pixel_height;
     }
 
     edges_update_position(wdata);
+}
+
+static void edges_render(wlclient_window_data* wdata) {
+    edges_handle_resize(wdata);
+    if (!wdata->csd_hidden) {
+        for (u32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
+            wlclient_surface_node* edge_node = &wdata->edge_nodes[i];
+            surface_node_render(edge_node, wdata->edge_color);
+        }
+    }
+    else {
+        WLCLIENT_LOG_DEBUG("Edges hidden; will not render");
+    }
+}
+
+static void edges_hide(wlclient_window_data* wdata) {
+    // Detach edge surfaces:
+    for (u32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
+        wl_surface_attach(wdata->edge_nodes[i].child_surface, NULL, 0, 0);
+        wl_surface_commit(wdata->edge_nodes[i].child_surface);
+    }
 }
 
 //======================================================================================================================
@@ -1337,10 +1468,6 @@ static void xdg_toplevel_configure_wm_capabilities(void* data, struct xdg_toplev
 static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u32 serial) {
     WLCLIENT_LOG_DEBUG("Surface configure serial: %" PRIu32, serial);
 
-    //     Zero-size cascade in xdg_surface_configure (1339-1346, 1408): in-flight packet zeroed every call; if only
-    //   xdg_surface.configure fires without xdg_toplevel.configure, window_logical_width/height become 0, propagating to
-    //   framebuffer and SHM pool size. Adjacent max-size code already guards with > 0 — the fix pattern is right there.
-
     wlclient_window* window = data;
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
 
@@ -1364,8 +1491,12 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
         );
     }
 
-    wdata->content_logical_width = window_to_content_width(wdata, wdata->window_logical_width);
-    wdata->content_logical_height = window_to_content_height(wdata, wdata->window_logical_height);
+    wdata->content_logical_width = wdata->csd_hidden
+        ? wdata->window_logical_width
+        : window_to_content_width(wdata, wdata->window_logical_width);
+    wdata->content_logical_height = wdata->csd_hidden
+        ? wdata->window_logical_height
+        : window_to_content_height(wdata, wdata->window_logical_height);
 
     wdata->framebuffer_pixel_width = (u32)wdata->scale_factor * wdata->content_logical_width;
     wdata->framebuffer_pixel_height = (u32)wdata->scale_factor * wdata->content_logical_height;
@@ -1373,48 +1504,13 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
     log_window_data_dimensions(wdata, WLCLIENT_LOG_LEVEL_DEBUG, __func__);
 
     // At this point the window geometry is clear
-    // TODO: Verify this garbage.
-    {
-        i32 frame_top_x = wdata->frame_hide
-            ? 0
-            : -(i32)wdata->edge_logical_thickness;
-        i32 frame_top_y = wdata->frame_hide
-            ? 0
-            : -(i32)wdata->edge_logical_thickness - (i32)wdata->decor_logical_height;
-        xdg_surface_set_window_geometry(
-            wdata->xdg_surface,
-            frame_top_x, frame_top_y,
-            (i32) wdata->window_logical_width, (i32) wdata->window_logical_height
-        );
-    }
+    apply_window_geometry(wdata);
 
     // Acknowledge the current configuration handshake with the compositor.
     xdg_surface_ack_configure(xdg_surface, serial);
 
-    // Render decoration node
-    {
-        decor_handle_resize(wdata);
-        if (!wdata->frame_hide) {
-            surface_node_render(&wdata->decor_node);
-        }
-        else {
-            WLCLIENT_LOG_DEBUG("Decoration hidden; will not render");
-        }
-    }
-
-    // Render edges
-    {
-        edges_handle_resize(wdata);
-        if (!wdata->frame_hide) {
-            for (u32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
-               wlclient_surface_node* edge_node = &wdata->edge_nodes[i];
-               surface_node_render(edge_node);
-            }
-        }
-        else {
-            WLCLIENT_LOG_DEBUG("Edges hidden; will not render");
-        }
-    }
+    decor_render(wdata);
+    edges_render(wdata);
 
     // Notify the backend for a resize event:
     if (g_state.backend_resize_window && wdata->used) {

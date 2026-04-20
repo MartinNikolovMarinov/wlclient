@@ -43,7 +43,7 @@ void assert_window_state_initialized(
     // Decoration config was applied verbatim.
     TEST_ASSERT_EQUAL_UINT32(expected_edge, wdata->edge_logical_thickness);
     TEST_ASSERT_EQUAL_UINT32(expected_decor, wdata->decor_logical_height);
-    TEST_ASSERT_EQUAL(expected_decor == 0, wdata->frame_hide);
+    TEST_ASSERT_EQUAL(expected_decor == 0, wdata->csd_hidden);
 
     // Scale factor defaults to 1 per wl_surface spec — preferred_buffer_scale cannot
     // fire before the surface is mapped, and we do not map inside create_window.

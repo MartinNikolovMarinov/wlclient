@@ -44,6 +44,8 @@ i32 main(void) {
         wlclient_window_decoration_config dcor_cfg = WLCLIENT_NO_DECORATION_CONFIG;
         dcor_cfg.edge_logical_thickness = 5;
         dcor_cfg.decor_logical_height = 30;
+        dcor_cfg.decor_color = (wlclient_color) { .r = 0, .g = 255, .b = 255, .a = 255 };
+        dcor_cfg.edge_color = (wlclient_color) { .r = 0, .g = 255, .b = 0, .a = 255 };
         result_code = wlclient_create_window(&window, 800, 600, "Example", &dcor_cfg);
         if (result_code != WLCLIENT_ERROR_OK) {
             printf("ERROR - %d\n", result_code);
@@ -96,16 +98,23 @@ i32 main(void) {
         }
     }
 
+    u32 fb_w, fb_h;
+    wlclient_get_framebuffer(&window, &fb_w, &fb_h);
+
     glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
-    glViewport(0, 0, 800, 700);
+    glViewport(0, 0, (i32)fb_w, (i32)fb_h);
 
     while (g_running) {
-        result_code = wlclient_poll_events(1000);
+        result_code = wlclient_poll_events(0);
         if (result_code != WLCLIENT_ERROR_OK && result_code != WLCLIENT_ERROR_EVENT_POLL_TIMEOUT) {
             printf("POLLING FAILED ERROR - %d\n", result_code);
             goto done;
         }
 
+        // wlclient_toggle_window_decor(&window);
+
+        wlclient_get_framebuffer(&window, &fb_w, &fb_h);
+        glViewport(0, 0, (i32)fb_w, (i32)fb_h);
         glClear(GL_COLOR_BUFFER_BIT);
 
         result_code = wlclient_egl_swap_buffers(&window);

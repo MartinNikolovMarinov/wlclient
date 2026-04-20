@@ -17,6 +17,8 @@ WLCLIENT_API_EXPORT wlclient_error_code wlclient_create_window(
     const wlclient_window_decoration_config* decor_cfg
 );
 WLCLIENT_API_EXPORT void wlclient_destroy_window(wlclient_window* window);
+WLCLIENT_API_EXPORT void wlclient_get_framebuffer(wlclient_window* window, u32* w, u32* h);
+WLCLIENT_API_EXPORT wlclient_error_code wlclient_toggle_window_decor(wlclient_window* window);
 
 WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns);
 
