@@ -59,7 +59,12 @@ typedef enum wlclient_error_code {
     WLCLIENT_ERROR_SENTINEL
 } wlclient_error_code;
 
-typedef void (*wlclient_close_handler)(void);
+struct wlclient_window;
+
+typedef void (*wlclient_close_handler)(struct wlclient_window* window);
+typedef void (*wlclient_size_change_handler)(struct wlclient_window* window, u32 width, u32 height);
+typedef void (*wlclient_framebuffer_change_handler)(struct wlclient_window* window, u32 width, u32 height);
+typedef void (*wlclient_scale_factor_change_handler)(struct wlclient_window* window, f32 factor);
 
 typedef struct wlclient_allocator {
     void* (*alloc)(usize size);
@@ -174,6 +179,9 @@ typedef struct wlclient_window_data {
 
     // User hooks
     wlclient_close_handler close_handler;
+    wlclient_size_change_handler size_change_handler;
+    wlclient_framebuffer_change_handler framebuffer_change_handler;
+    wlclient_scale_factor_change_handler scale_factor_change_handler;
 } wlclient_window_data;
 
 typedef struct wlclient_global_state {
@@ -206,5 +214,6 @@ typedef struct wlclient_global_state {
     // Backend hooks.
     void (*backend_shutdown)(void);
     void (*backend_destroy_window)(const wlclient_window* window);
-    void (*backend_resize_window)(const wlclient_window* window, u32 framebuffer_width, u32 framebuffer_height);
+    void (*backend_resize_framebuffer)(const wlclient_window* window, u32 framebuffer_width, u32 framebuffer_height);
+    void (*backend_scale_change)(const wlclient_window* window, f32 factor);
 } wlclient_global_state;

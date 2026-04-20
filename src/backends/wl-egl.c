@@ -47,6 +47,7 @@ static wlclient_egl_window_data g_egl_window_data[WLCLIENT_WINDOWS_COUNT] = {0};
 static void egl_shutdown(void);
 static void egl_destroy_window(const wlclient_window* window);
 static void egl_resize_window(const wlclient_window* window, u32 framebuffer_width, u32 framebuffer_height);
+static void egl_scale_change_window(const wlclient_window* window, f32 factor);
 
 //======================================================================================================================
 // Helper Declarations
@@ -110,7 +111,8 @@ wlclient_error_code wlclient_egl_init(EGLenum api) {
     {
         _wlclient_set_backend_shutdown(egl_shutdown);
         _wlclient_set_backend_destroy_window(egl_destroy_window);
-        _wlclient_set_backend_resize_window(egl_resize_window);
+        _wlclient_set_backend_resize_framebuffer(egl_resize_window);
+        _wlclient_set_backend_scale_change(egl_scale_change_window);
     }
 
     egl_reset_config_attrs();
@@ -254,6 +256,14 @@ static void egl_resize_window(const wlclient_window* window, u32 framebuffer_wid
         framebuffer_height
     );
     wl_egl_window_resize(egl_wdata->egl_window, (i32)framebuffer_width, (i32)framebuffer_height, 0, 0);
+}
+
+static void egl_scale_change_window(const wlclient_window* window, f32 factor) {
+    wlclient_egl_window_data* egl_wdata = &g_egl_window_data[window->id];
+    if (!egl_wdata->used || !egl_wdata->egl_window) return;
+
+    (void)factor;
+    // FIXME: [SCALING] How do I handle this?
 }
 
 //======================================================================================================================

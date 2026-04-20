@@ -476,9 +476,17 @@ wlclient_error_code wlclient_toggle_window_decor(wlclient_window* window) {
         edges_render(wdata);
     }
 
-    // Notify the backend for a resize event:
-    if (g_state.backend_resize_window && wdata->used) {
-        g_state.backend_resize_window(window, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
+    // Notify backend and user code
+    {
+        if (g_state.backend_resize_framebuffer) {
+            g_state.backend_resize_framebuffer(window, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
+        }
+        if (wdata->framebuffer_change_handler) {
+            wdata->framebuffer_change_handler(window, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
+        }
+        if (wdata->size_change_handler) {
+            wdata->size_change_handler(window, wdata->content_logical_width, wdata->content_logical_height);
+        }
     }
 
     return WLCLIENT_ERROR_OK;
@@ -587,6 +595,21 @@ void wlclient_set_close_handler(wlclient_window* window, wlclient_close_handler 
     wdata->close_handler = handler;
 }
 
+void wlclient_set_size_change_handler(wlclient_window* window, wlclient_size_change_handler handler) {
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    wdata->size_change_handler = handler;
+}
+
+void wlclient_set_framebuffer_change_handler(wlclient_window* window, wlclient_framebuffer_change_handler handler) {
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    wdata->framebuffer_change_handler = handler;
+}
+
+void wlclient_set_scale_factor_change_handler(wlclient_window* window, wlclient_scale_factor_change_handler handler) {
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    wdata->scale_factor_change_handler = handler;
+}
+
 //======================================================================================================================
 // INTERNALS IMPLEMENTATIONS
 //======================================================================================================================
@@ -615,8 +638,12 @@ void _wlclient_set_backend_destroy_window(void (*destroy_window)(const wlclient_
     g_state.backend_destroy_window = destroy_window;
 }
 
-void _wlclient_set_backend_resize_window(void (*resize_window)(const wlclient_window* window, u32 framebuffer_width, u32 framebuffer_height)) {
-    g_state.backend_resize_window = resize_window;
+void _wlclient_set_backend_resize_framebuffer(void (*resize_fb)(const wlclient_window* window, u32 framebuffer_width, u32 framebuffer_height)) {
+    g_state.backend_resize_framebuffer = resize_fb;
+}
+
+void _wlclient_set_backend_scale_change(void (*scale_change)(const wlclient_window* window, f32 factor)) {
+    g_state.backend_scale_change = scale_change;
 }
 
 //======================================================================================================================
@@ -1368,7 +1395,7 @@ static void xdg_toplevel_close(void* data, struct xdg_toplevel* toplevel) {
     wlclient_window* window = data;
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
     if (wdata->close_handler) {
-        wdata->close_handler();
+        wdata->close_handler(window);
     }
 }
 
@@ -1512,9 +1539,17 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
     decor_render(wdata);
     edges_render(wdata);
 
-    // Notify the backend for a resize event:
-    if (g_state.backend_resize_window && wdata->used) {
-        g_state.backend_resize_window(window, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
+    // Notify backend and user code
+    {
+        if (g_state.backend_resize_framebuffer && wdata->used) {
+            g_state.backend_resize_framebuffer(window, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
+        }
+        if (wdata->framebuffer_change_handler) {
+            wdata->framebuffer_change_handler(window, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
+        }
+        if (wdata->size_change_handler) {
+            wdata->size_change_handler(window, wdata->content_logical_width, wdata->content_logical_height);
+        }
     }
 
     // zero out the in-flight packet
@@ -1653,7 +1688,15 @@ static void surface_preferred_buffer_scale(void* data, struct wl_surface* surfac
     wdata->scale_factor = (f32)factor;
     wl_surface_set_buffer_scale(surface, (i32) wdata->scale_factor);
 
-    // FIXME: what else needs to be notified here ? I guess a backend scale factor changes should be triggered ?
+    // Notify backend and user
+    {
+        if (g_state.backend_scale_change) {
+            g_state.backend_scale_change(window, wdata->scale_factor);
+        }
+        if (wdata->scale_factor_change_handler) {
+            wdata->scale_factor_change_handler(window, wdata->scale_factor);
+        }
+    }
 }
 
 /**

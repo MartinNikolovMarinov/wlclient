@@ -115,7 +115,7 @@ void assert_global_state_initialized() {
 
     TEST_ASSERT_NULL(s->backend_shutdown);
     TEST_ASSERT_NULL(s->backend_destroy_window);
-    TEST_ASSERT_NULL(s->backend_resize_window);
+    TEST_ASSERT_NULL(s->backend_resize_framebuffer);
 }
 
 i32 basic_wlclient_init(void) {

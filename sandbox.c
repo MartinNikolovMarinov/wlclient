@@ -20,9 +20,21 @@ static void sigint_handler(int sig) {
     g_running = 0;
 }
 
-void handle_close(void) {
-    printf("USER SPACE: Received close signal.\n");
+void handle_close(wlclient_window* window) {
+    printf("USER SPACE: Received close signal for window (id=%d)\n", window->id);
     g_running = 0;
+}
+
+void handle_size_change(wlclient_window* window, u32 width, u32 height) {
+    printf("USER SPACE: Size change for window (id=%d) to width=%d and height=%d \n", window->id, width, height);
+}
+
+void framebuffer_size_change(wlclient_window* window, u32 width, u32 height) {
+    printf("USER SPACE: Framebuffer size change for window (id=%d) to width=%d and height=%d \n", window->id, width, height);
+}
+
+void scale_factor_change(wlclient_window* window, f32 factor) {
+    printf("USER SPACE: Scale factor change for window (id=%d) to factor=%f \n", window->id, (f64)factor);
 }
 
 i32 main(void) {
@@ -56,6 +68,9 @@ i32 main(void) {
     // Set window handlers
     {
         wlclient_set_close_handler(&window, handle_close);
+        wlclient_set_size_change_handler(&window, handle_size_change);
+        wlclient_set_framebuffer_change_handler(&window, framebuffer_size_change);
+        wlclient_set_scale_factor_change_handler(&window, scale_factor_change);
     }
 
     // Configure EGL
@@ -105,7 +120,7 @@ i32 main(void) {
     glViewport(0, 0, (i32)fb_w, (i32)fb_h);
 
     while (g_running) {
-        result_code = wlclient_poll_events(0);
+        result_code = wlclient_poll_events(100);
         if (result_code != WLCLIENT_ERROR_OK && result_code != WLCLIENT_ERROR_EVENT_POLL_TIMEOUT) {
             printf("POLLING FAILED ERROR - %d\n", result_code);
             goto done;
@@ -122,8 +137,6 @@ i32 main(void) {
             printf("SWAP BUFFERS FAILED ERROR - %d\n", result_code);
             goto done;
         }
-
-        // sleep(1);
     }
 
 done:

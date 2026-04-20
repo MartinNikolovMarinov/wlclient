@@ -23,6 +23,9 @@ WLCLIENT_API_EXPORT wlclient_error_code wlclient_toggle_window_decor(wlclient_wi
 WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns);
 
 WLCLIENT_API_EXPORT void wlclient_set_close_handler(wlclient_window* window, wlclient_close_handler handler);
+WLCLIENT_API_EXPORT void wlclient_set_size_change_handler(wlclient_window* window, wlclient_size_change_handler handler);
+WLCLIENT_API_EXPORT void wlclient_set_framebuffer_change_handler(wlclient_window* window, wlclient_framebuffer_change_handler handler);
+WLCLIENT_API_EXPORT void wlclient_set_scale_factor_change_handler(wlclient_window* window, wlclient_scale_factor_change_handler handler);
 
 //======================================================================================================================
 // INTERNALS - these expose internal state that is needed for custom backend development.
@@ -36,4 +39,5 @@ WLCLIENT_API_EXPORT wlclient_window_data* _wlclient_get_wl_window_data(const wlc
 
 WLCLIENT_API_EXPORT void _wlclient_set_backend_shutdown(void (*shutdown)(void));
 WLCLIENT_API_EXPORT void _wlclient_set_backend_destroy_window(void (*destroy_window)(const wlclient_window* window));
-WLCLIENT_API_EXPORT void _wlclient_set_backend_resize_window(void (*resize_window)(const wlclient_window* window, u32 framebuffer_width, u32 framebuffer_height));
+WLCLIENT_API_EXPORT void _wlclient_set_backend_resize_framebuffer(void (*resize_fb)(const wlclient_window* window, u32 framebuffer_width, u32 framebuffer_height));
+WLCLIENT_API_EXPORT void _wlclient_set_backend_scale_change(void (*scale_change)(const wlclient_window* window, f32 factor));
