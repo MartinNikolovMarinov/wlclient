@@ -38,6 +38,17 @@ do {                                                                            
 #define WLCLIENT_MAX_WINDOW_WIDTH 15360
 #define WLCLIENT_MAX_WINDOW_HEIGHT 8640
 
+typedef enum surface_type {
+    ST_UNKNOWN,
+    ST_MAIN,
+    ST_DECOR,
+    ST_TOP_EDGE,
+    ST_RIGHT_EDGE,
+    ST_BOTTOM_EDGE,
+    ST_LEFT_EDGE,
+    ST_SENTINEL
+} surface_type;
+
 static wlclient_global_state g_state;
 
 //======================================================================================================================
@@ -84,6 +95,8 @@ static void edges_update_position(wlclient_window_data* wdata);
 static void edges_handle_resize(wlclient_window_data* wdata);
 static void edges_render(wlclient_window_data* wdata);
 static void edges_hide(wlclient_window_data* wdata);
+
+static surface_type surface_get_type(wlclient_window_data* wdata, struct wl_surface* surface);
 
 //======================================================================================================================
 // Wayland Handlers
@@ -318,6 +331,9 @@ wlclient_error_code wlclient_create_window(
         wdata->surface = wl_compositor_create_surface(g_state.compositor);
         ENSURE_OR_GOTO_ERR(wdata->surface);
 
+        // Associated the surface with the window
+        wl_surface_set_user_data(wdata->surface, window);
+
         const static struct wl_surface_listener surface_listener = {
             .enter = surface_enter,
             .leave = surface_leave,
@@ -362,6 +378,8 @@ wlclient_error_code wlclient_create_window(
             wdata->decor_node.child_surface = wl_compositor_create_surface(g_state.compositor);
             ENSURE_OR_GOTO_ERR(wdata->decor_node.child_surface);
 
+            wl_surface_set_user_data(wdata->decor_node.child_surface, window);
+
             wdata->decor_node.subsurface = wl_subcompositor_get_subsurface(
                 g_state.subcompositor,
                 wdata->decor_node.child_surface,
@@ -377,6 +395,8 @@ wlclient_error_code wlclient_create_window(
             for (i32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
                 wdata->edge_nodes[i].child_surface = wl_compositor_create_surface(g_state.compositor);
                 ENSURE_OR_GOTO_ERR(wdata->edge_nodes[i].child_surface);
+
+                wl_surface_set_user_data(wdata->edge_nodes[i].child_surface, window);
 
                 wdata->edge_nodes[i].subsurface = wl_subcompositor_get_subsurface(
                     g_state.subcompositor,
@@ -493,8 +513,6 @@ wlclient_error_code wlclient_toggle_window_decor(wlclient_window* window) {
 }
 
 WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns) {
-    WLCLIENT_LOG_TRACE("Polling for events...");
-
     bool received_event = false;
     enum { DISPLAY_FD }; // TODO: Will probably need an fd for cursor animation.
     struct pollfd pfds[] =
@@ -608,6 +626,11 @@ void wlclient_set_framebuffer_change_handler(wlclient_window* window, wlclient_f
 void wlclient_set_scale_factor_change_handler(wlclient_window* window, wlclient_scale_factor_change_handler handler) {
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
     wdata->scale_factor_change_handler = handler;
+}
+
+void wlclient_set_mouse_move_handler(wlclient_window* window, wlclient_mouse_move_handler handler) {
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    wdata->mouse_move_handler = handler;
 }
 
 //======================================================================================================================
@@ -1233,6 +1256,17 @@ static void edges_hide(wlclient_window_data* wdata) {
     }
 }
 
+static surface_type surface_get_type(wlclient_window_data* wdata, struct wl_surface* surface) {
+    if (!surface) return ST_UNKNOWN;
+    if (surface == wdata->surface) return ST_MAIN;
+    if (surface == wdata->decor_node.child_surface) return ST_DECOR;
+    if (surface == wdata->edge_nodes[WLCLIENT_EDGE_TOP].child_surface) return ST_TOP_EDGE;
+    if (surface == wdata->edge_nodes[WLCLIENT_EDGE_BOTTOM].child_surface) return ST_BOTTOM_EDGE;
+    if (surface == wdata->edge_nodes[WLCLIENT_EDGE_LEFT].child_surface) return ST_LEFT_EDGE;
+    if (surface == wdata->edge_nodes[WLCLIENT_EDGE_RIGHT].child_surface) return ST_RIGHT_EDGE;
+    return ST_UNKNOWN;
+}
+
 //======================================================================================================================
 // Wayland Handlers Implementations
 //======================================================================================================================
@@ -1587,7 +1621,7 @@ static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilit
                 .modifiers = keyboard_modifiers,
                 .repeat_info = keyboard_repeat_info,
             };
-            i32 ret = wl_keyboard_add_listener(input_device->keyboard, &listener, NULL);
+            i32 ret = wl_keyboard_add_listener(input_device->keyboard, &listener, input_device);
             WLCLIENT_PANIC(ret == 0, "Failed to add keyboard listener");
 
             WLCLIENT_LOG_DEBUG("Registered keyboard for seat(id=%"PRIu32")", input_device->seat_id);
@@ -1620,7 +1654,7 @@ static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilit
                 .axis_value120 = pointer_axis_value120,
                 .axis_relative_direction = pointer_axis_relative_direction,
             };
-            i32 ret = wl_pointer_add_listener(input_device->pointer, &listener, NULL);
+            i32 ret = wl_pointer_add_listener(input_device->pointer, &listener, input_device);
             WLCLIENT_PANIC(ret == 0, "Failed to add pointer listener");
 
             WLCLIENT_LOG_DEBUG("Registered mouse for seat(id=%"PRIu32")", input_device->seat_id);
@@ -1792,13 +1826,21 @@ static void release_buffer(void *data, struct wl_buffer *wl_buffer) {
 *   surface_y - pointer y coordinate in surface-local coordinates
 */
 static void pointer_enter(void* data, struct wl_pointer* wl_pointer, u32 serial, struct wl_surface* surface, wl_fixed_t surface_x, wl_fixed_t surface_y) {
-    (void)data;
+    (void)serial;
     (void)wl_pointer;
-    (void)surface;
 
-    WLCLIENT_LOG_TRACE(
-        "Pointer enter: serial=%" PRIu32 ", x=%f, y=%f",
-        serial,
+    wlclient_window* window = wl_surface_get_user_data(surface);
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    wlclient_input_device* idev = data;
+    idev->mouse_in_flight_packet.target_surface = surface;
+    idev->mouse_in_flight_packet.focus = true;
+    idev->mouse_in_flight_packet.x = wl_fixed_to_double(surface_x);
+    idev->mouse_in_flight_packet.y = wl_fixed_to_double(surface_y);
+
+    WLCLIENT_LOG_DEBUG(
+        "Pointer entered at surface type=%"PRIu32" for window(id=%"PRIu32") at position: x=%f, y=%f",
+        surface_get_type(wdata, surface),
+        window->id,
         wl_fixed_to_double(surface_x),
         wl_fixed_to_double(surface_y)
     );
@@ -1811,17 +1853,27 @@ static void pointer_enter(void* data, struct wl_pointer* wl_pointer, u32 serial,
 *   - when the compositor removes pointer focus from the client surface
 *
 * Parameters:
-*   data      - user-provided pointer passed to wl_pointer_add_listener
+*   data       - user-provided pointer passed to wl_pointer_add_listener
 *   wl_pointer - the wl_pointer instance
-*   serial    - serial identifying the leave event
-*   surface   - the wl_surface that lost pointer focus
+*   serial     - serial identifying the leave event
+*   surface    - the wl_surface that lost pointer focus
 */
 static void pointer_leave(void* data, struct wl_pointer* wl_pointer, u32 serial, struct wl_surface* surface) {
+    (void)serial;
     (void)data;
     (void)wl_pointer;
-    (void)surface;
 
-    WLCLIENT_LOG_TRACE("Pointer leave: serial=%" PRIu32, serial);
+    wlclient_window* window = wl_surface_get_user_data(surface);
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    wlclient_input_device* idev = data;
+    idev->mouse_in_flight_packet.target_surface = surface;
+    idev->mouse_in_flight_packet.focus = false;
+
+    WLCLIENT_LOG_DEBUG(
+        "Pointer left surface type=%"PRIu32" on window(id=%"PRIu32")",
+        surface_get_type(wdata, surface),
+        window->id
+    );
 }
 
 /**
@@ -1831,22 +1883,25 @@ static void pointer_leave(void* data, struct wl_pointer* wl_pointer, u32 serial,
 *   - whenever the pointer moves while focused on one of the client's surfaces
 *
 * Parameters:
-*   data      - user-provided pointer passed to wl_pointer_add_listener
+*   data       - user-provided pointer passed to wl_pointer_add_listener
 *   wl_pointer - the wl_pointer instance
-*   time      - compositor timestamp in milliseconds
-*   surface_x - pointer x coordinate in surface-local coordinates
-*   surface_y - pointer y coordinate in surface-local coordinates
+*   time       - compositor timestamp in milliseconds
+*   surface_x  - pointer x coordinate in surface-local coordinates
+*   surface_y  - pointer y coordinate in surface-local coordinates
 */
 static void pointer_motion(void* data, struct wl_pointer* wl_pointer, u32 time, wl_fixed_t surface_x, wl_fixed_t surface_y) {
-    (void)data;
+    (void)time;
     (void)wl_pointer;
 
-    WLCLIENT_LOG_TRACE(
-        "Pointer motion: time=%" PRIu32 ", x=%f, y=%f",
-        time,
-        wl_fixed_to_double(surface_x),
-        wl_fixed_to_double(surface_y)
-    );
+    f64 x = wl_fixed_to_double(surface_x);
+    f64 y = wl_fixed_to_double(surface_y);
+
+    wlclient_input_device* idev = data;
+    idev->mouse_in_flight_packet.has_motion = true;
+    idev->mouse_in_flight_packet.x = x;
+    idev->mouse_in_flight_packet.y = y;
+
+    WLCLIENT_LOG_TRACE("Pointer motion x=%f, y=%f", x, y);
 }
 
 /**
@@ -1864,8 +1919,14 @@ static void pointer_motion(void* data, struct wl_pointer* wl_pointer, u32 time, 
 *   state     - wl_pointer_button_state value for press or release
 */
 static void pointer_button(void* data, struct wl_pointer* wl_pointer, u32 serial, u32 time, u32 button, u32 state) {
-    (void)data;
     (void)wl_pointer;
+    (void)time;
+    (void)serial;
+
+    wlclient_input_device* idev = data;
+    idev->mouse_in_flight_packet.has_button = true;
+    idev->mouse_in_flight_packet.button = button;
+    idev->mouse_in_flight_packet.button_state = state;
 
     WLCLIENT_LOG_TRACE(
         "Pointer button: serial=%" PRIu32 ", time=%" PRIu32 ", button=%" PRIu32 ", state=%" PRIu32,
@@ -1907,10 +1968,44 @@ static void pointer_axis(void* data, struct wl_pointer* wl_pointer, u32 time, u3
 *   wl_pointer - the wl_pointer instance
 */
 static void pointer_frame(void* data, struct wl_pointer* wl_pointer) {
-    (void)data;
     (void)wl_pointer;
 
     WLCLIENT_LOG_TRACE("Pointer frame");
+
+    wlclient_input_device* idev = data;
+    struct wl_surface* target_surface = idev->mouse_in_flight_packet.target_surface;
+
+    if (!target_surface) {
+        WLCLIENT_LOG_WARN("Focused surface is not set.");
+        return;
+    }
+
+    wlclient_window* target_window = wl_surface_get_user_data(target_surface);
+    wlclient_window_data* target_wdata = _wlclient_get_wl_window_data(target_window);
+
+    bool has_motion = idev->mouse_in_flight_packet.has_motion;
+    f64 x = idev->mouse_in_flight_packet.x;
+    f64 y = idev->mouse_in_flight_packet.y;
+
+    WLCLIENT_LOG_DEBUG(
+        "\n --- Pointer frame ---"
+        "\n  window_id = %"PRIi32","
+        "\n  surface_type = %"PRIu32","
+        "\n  position = (x=%.3f, y=%.3f),"
+        "\n  has_motion = %s,"
+        "\n  has_button = %s,"
+        "\n  button = %"PRIu32","
+        "\n  button_state = %"PRIu32","
+        "\n  focus = %s",
+        target_window->id,
+        surface_get_type(target_wdata, target_surface),
+        x, y,
+        has_motion ? "true" : "false",
+        idev->mouse_in_flight_packet.has_button ? "true" : "false",
+        idev->mouse_in_flight_packet.button,
+        idev->mouse_in_flight_packet.button_state,
+        idev->mouse_in_flight_packet.focus ? "true" : "false"
+    );
 }
 
 /**

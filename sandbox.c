@@ -4,8 +4,6 @@
 
 #include <signal.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <time.h>
 #include <unistd.h>
 
 #include "debug.h"
@@ -29,17 +27,20 @@ void handle_size_change(wlclient_window* window, u32 width, u32 height) {
     printf("USER SPACE: Size change for window (id=%d) to width=%d and height=%d \n", window->id, width, height);
 }
 
-void framebuffer_size_change(wlclient_window* window, u32 width, u32 height) {
+void handle_framebuffer_size_change(wlclient_window* window, u32 width, u32 height) {
     printf("USER SPACE: Framebuffer size change for window (id=%d) to width=%d and height=%d \n", window->id, width, height);
 }
 
-void scale_factor_change(wlclient_window* window, f32 factor) {
+void handle_scale_factor_change(wlclient_window* window, f32 factor) {
     printf("USER SPACE: Scale factor change for window (id=%d) to factor=%f \n", window->id, (f64)factor);
+}
+
+void handle_mouse_move(struct wlclient_window* window, f64 x, f64 y) {
+    printf("USER SPACE: Mouse move for window (id=%d) x=%f, y=%f \n", window->id, x, y);
 }
 
 i32 main(void) {
     signal(SIGINT, sigint_handler);
-    srand((u32) time(0));
 
     wlclient_error_code result_code = 0;
 
@@ -54,8 +55,8 @@ i32 main(void) {
     wlclient_window window;
     {
         wlclient_window_decoration_config dcor_cfg = WLCLIENT_NO_DECORATION_CONFIG;
-        dcor_cfg.edge_logical_thickness = 5;
-        dcor_cfg.decor_logical_height = 30;
+        dcor_cfg.edge_logical_thickness = 20;
+        dcor_cfg.decor_logical_height = 50;
         dcor_cfg.decor_color = (wlclient_color) { .r = 0, .g = 255, .b = 255, .a = 255 };
         dcor_cfg.edge_color = (wlclient_color) { .r = 0, .g = 255, .b = 0, .a = 255 };
         result_code = wlclient_create_window(&window, 800, 600, "Example", &dcor_cfg);
@@ -69,8 +70,9 @@ i32 main(void) {
     {
         wlclient_set_close_handler(&window, handle_close);
         wlclient_set_size_change_handler(&window, handle_size_change);
-        wlclient_set_framebuffer_change_handler(&window, framebuffer_size_change);
-        wlclient_set_scale_factor_change_handler(&window, scale_factor_change);
+        wlclient_set_framebuffer_change_handler(&window, handle_framebuffer_size_change);
+        wlclient_set_scale_factor_change_handler(&window, handle_scale_factor_change);
+        wlclient_set_mouse_move_handler(&window, handle_mouse_move);
     }
 
     // Configure EGL
@@ -137,6 +139,8 @@ i32 main(void) {
             printf("SWAP BUFFERS FAILED ERROR - %d\n", result_code);
             goto done;
         }
+
+        // sleep(1);
     }
 
 done:

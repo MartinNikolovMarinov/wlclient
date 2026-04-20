@@ -13,3 +13,7 @@ Maybe I should have a "Window demage and refresh" to notify the user when a wind
 2. Set cursor
 3. Set window opacity and investigate why alpha blending is broken ?
 4. Monitor configurations and tests with multi-monotor setup.
+
+# Valgrind errors
+
+There are quite a lot of Valgrind errors during execution. Investigate what is going on. Write a suppression for the problems that come from drivers.

@@ -26,6 +26,7 @@ WLCLIENT_API_EXPORT void wlclient_set_close_handler(wlclient_window* window, wlc
 WLCLIENT_API_EXPORT void wlclient_set_size_change_handler(wlclient_window* window, wlclient_size_change_handler handler);
 WLCLIENT_API_EXPORT void wlclient_set_framebuffer_change_handler(wlclient_window* window, wlclient_framebuffer_change_handler handler);
 WLCLIENT_API_EXPORT void wlclient_set_scale_factor_change_handler(wlclient_window* window, wlclient_scale_factor_change_handler handler);
+WLCLIENT_API_EXPORT void wlclient_set_mouse_move_handler(wlclient_window* window, wlclient_mouse_move_handler handler);
 
 //======================================================================================================================
 // INTERNALS - these expose internal state that is needed for custom backend development.
