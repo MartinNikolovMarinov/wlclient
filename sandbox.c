@@ -29,14 +29,26 @@ void handle_size_change(wlclient_window* window, u32 width, u32 height) {
 
 void handle_framebuffer_size_change(wlclient_window* window, u32 width, u32 height) {
     printf("USER SPACE: Framebuffer size change for window (id=%d) to width=%d and height=%d \n", window->id, width, height);
+    glViewport(0, 0, (i32)width, (i32)height);
 }
 
 void handle_scale_factor_change(wlclient_window* window, f32 factor) {
     printf("USER SPACE: Scale factor change for window (id=%d) to factor=%f \n", window->id, (f64)factor);
 }
 
+void handle_input_focus(struct wlclient_window* window, bool has_input_focus) {
+    printf("USER SPACE: Input focus for window (id=%d) focused=%s\n", window->id, has_input_focus ? "true" : "false");
+}
+
 void handle_mouse_move(struct wlclient_window* window, f64 x, f64 y) {
     printf("USER SPACE: Mouse move for window (id=%d) x=%f, y=%f \n", window->id, x, y);
+}
+
+void handle_mouse_press_handler(struct wlclient_window* window, u32 button, bool is_pressed, f64 x, f64 y) {
+    printf(
+        "USER SPACE: Mouse press for window (id=%d) button=%d pressed=%s x=%f, y=%f\n",
+        window->id, button, is_pressed ? "true" : "false", x, y
+    );
 }
 
 i32 main(void) {
@@ -44,7 +56,7 @@ i32 main(void) {
 
     wlclient_error_code result_code = 0;
 
-    wlclient_log_set_level(WLCLIENT_LOG_LEVEL_DEBUG);
+    wlclient_log_set_level(WLCLIENT_LOG_LEVEL_INFO);
     result_code = wlclient_init(NULL);
     if (result_code != WLCLIENT_ERROR_OK) {
         printf("ERROR - %d\n", result_code);
@@ -72,7 +84,9 @@ i32 main(void) {
         wlclient_set_size_change_handler(&window, handle_size_change);
         wlclient_set_framebuffer_change_handler(&window, handle_framebuffer_size_change);
         wlclient_set_scale_factor_change_handler(&window, handle_scale_factor_change);
+        wlclient_set_input_focus_handler(&window, handle_input_focus);
         wlclient_set_mouse_move_handler(&window, handle_mouse_move);
+        wlclient_set_handle_mouse_press_handler(&window, handle_mouse_press_handler);
     }
 
     // Configure EGL
@@ -108,7 +122,7 @@ i32 main(void) {
         }
 
         // Configure vsync:
-        result_code = wlclient_egl_set_swap_interval(1);
+        result_code = wlclient_egl_set_swap_interval(0);
         if (result_code != WLCLIENT_ERROR_OK) {
             printf("ERROR - %d\n", result_code);
             goto done;
@@ -130,8 +144,6 @@ i32 main(void) {
 
         // wlclient_toggle_window_decor(&window);
 
-        wlclient_get_framebuffer(&window, &fb_w, &fb_h);
-        glViewport(0, 0, (i32)fb_w, (i32)fb_h);
         glClear(GL_COLOR_BUFFER_BIT);
 
         result_code = wlclient_egl_swap_buffers(&window);

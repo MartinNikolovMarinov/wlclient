@@ -1,3 +1,5 @@
+TODO: OUT OF DATE!
+
 I need to design the code to be testable by configuring a test output file. This way I can run an integration test and verify the color output.
 
 ## Size Naming Policy

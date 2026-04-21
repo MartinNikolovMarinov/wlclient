@@ -61,11 +61,16 @@ typedef enum wlclient_error_code {
 
 struct wlclient_window;
 
+// Windowing events:
 typedef void (*wlclient_close_handler)(struct wlclient_window* window);
 typedef void (*wlclient_size_change_handler)(struct wlclient_window* window, u32 width, u32 height);
 typedef void (*wlclient_framebuffer_change_handler)(struct wlclient_window* window, u32 width, u32 height);
 typedef void (*wlclient_scale_factor_change_handler)(struct wlclient_window* window, f32 factor);
+typedef void (*wlclient_input_focus_handler)(struct wlclient_window* window, bool hasInputFocus);
+
+// Mouse input events:
 typedef void (*wlclient_mouse_move_handler)(struct wlclient_window* window, f64 x, f64 y);
+typedef void (*wlclient_mouse_press_handler)(struct wlclient_window* window, u32 button, bool isPressed, f64 x, f64 y);
 
 typedef struct wlclient_allocator {
     void* (*alloc)(usize size);
@@ -91,16 +96,31 @@ const static wlclient_window_decoration_config WLCLIENT_NO_DECORATION_CONFIG = {
     .decor_color = {0}
 };
 
+typedef enum wlclient_surface_type {
+    ST_UNKNOWN,
+    ST_MAIN,
+    ST_DECOR,
+    ST_TOP_EDGE,
+    ST_RIGHT_EDGE,
+    ST_BOTTOM_EDGE,
+    ST_LEFT_EDGE,
+    ST_SENTINEL
+} wlclient_surface_type;
+
 typedef struct wlclient_input_device {
     struct {
-        // TODO: [PERFORMANCE] combine the different flags into a single flag variable.
-        bool focus;
-        bool has_motion;
-        bool has_button;
+        u32 pending_flags;
+        // Surface the pointer is currently entered on. Target of motion, button, gained-focus.
         struct wl_surface* target_surface;
+        wlclient_surface_type target_surface_type;
+        // Surface that lost pointer focus this frame. Separate slot so leave+enter delivered in the same frame can both
+        // be dispatched (compositors commonly batch cross-surface transitions).
+        struct wl_surface* leave_surface;
+        wlclient_surface_type leave_surface_type;
         f64 x, y;
         u32 button;
-        u32 button_state;
+        // Serial of the most recent button press — required by xdg_toplevel_resize / xdg_toplevel_move.
+        u32 button_serial;
     } mouse_in_flight_packet;
 
     bool used;
@@ -194,7 +214,9 @@ typedef struct wlclient_window_data {
     wlclient_size_change_handler size_change_handler;
     wlclient_framebuffer_change_handler framebuffer_change_handler;
     wlclient_scale_factor_change_handler scale_factor_change_handler;
+    wlclient_input_focus_handler input_focus_handler;
     wlclient_mouse_move_handler mouse_move_handler;
+    wlclient_mouse_press_handler mouse_press_handler;
 } wlclient_window_data;
 
 typedef struct wlclient_global_state {

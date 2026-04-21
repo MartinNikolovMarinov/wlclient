@@ -19,6 +19,8 @@
 #include <wayland-client-core.h>
 #include <wayland-util.h>
 
+#include <linux/input-event-codes.h>
+
 // TODO: [FRACTIONAL_SCALING] Every calculation that uses scaling will have to change when fractional scaling is introduced.
 // TODO: [ALPHA_BLENDING] The decoration alpha blending is broken, or possibly not configured; needs investigation.
 
@@ -38,16 +40,13 @@ do {                                                                            
 #define WLCLIENT_MAX_WINDOW_WIDTH 15360
 #define WLCLIENT_MAX_WINDOW_HEIGHT 8640
 
-typedef enum surface_type {
-    ST_UNKNOWN,
-    ST_MAIN,
-    ST_DECOR,
-    ST_TOP_EDGE,
-    ST_RIGHT_EDGE,
-    ST_BOTTOM_EDGE,
-    ST_LEFT_EDGE,
-    ST_SENTINEL
-} surface_type;
+// Mouse Input Flags:
+#define MIF_NONE         (0u)
+#define MIF_GAINED_FOCUS (1u << 0)
+#define MIF_LOST_FOCUS   (1u << 1)
+#define MIF_HAS_MOTION   (1u << 2)
+#define MIF_IS_PRESSED   (1u << 3)
+#define MIF_IS_RELEASED  (1u << 4)
 
 static wlclient_global_state g_state;
 
@@ -95,8 +94,13 @@ static void edges_update_position(wlclient_window_data* wdata);
 static void edges_handle_resize(wlclient_window_data* wdata);
 static void edges_render(wlclient_window_data* wdata);
 static void edges_hide(wlclient_window_data* wdata);
+static u32 edges_determine_xdg_toplevel_resize_edge(
+    wlclient_window_data* wdata,
+    wlclient_surface_type surface_type,
+    f64 mouse_x
+);
 
-static surface_type surface_get_type(wlclient_window_data* wdata, struct wl_surface* surface);
+static wlclient_surface_type surface_get_type(wlclient_window_data* wdata, struct wl_surface* surface);
 
 //======================================================================================================================
 // Wayland Handlers
@@ -126,12 +130,12 @@ static void surface_preferred_buffer_transform(void *data, struct wl_surface *wl
 
 static void release_buffer(void *data, struct wl_buffer *wl_buffer);
 
+static void pointer_frame(void* data, struct wl_pointer* wl_pointer);
 static void pointer_enter(void* data, struct wl_pointer* wl_pointer, u32 serial, struct wl_surface* surface, wl_fixed_t surface_x, wl_fixed_t surface_y);
 static void pointer_leave(void* data, struct wl_pointer* wl_pointer, u32 serial, struct wl_surface* surface);
 static void pointer_motion(void* data, struct wl_pointer* wl_pointer, u32 time, wl_fixed_t surface_x, wl_fixed_t surface_y);
 static void pointer_button(void* data, struct wl_pointer* wl_pointer, u32 serial, u32 time, u32 button, u32 state);
 static void pointer_axis(void* data, struct wl_pointer* wl_pointer, u32 time, u32 axis, wl_fixed_t value);
-static void pointer_frame(void* data, struct wl_pointer* wl_pointer);
 static void pointer_axis_source(void* data, struct wl_pointer* wl_pointer, u32 axis_source);
 static void pointer_axis_stop(void* data, struct wl_pointer* wl_pointer, u32 time, u32 axis);
 static void pointer_axis_discrete(void* data, struct wl_pointer* wl_pointer, u32 axis, i32 discrete);
@@ -628,9 +632,19 @@ void wlclient_set_scale_factor_change_handler(wlclient_window* window, wlclient_
     wdata->scale_factor_change_handler = handler;
 }
 
+void wlclient_set_input_focus_handler(wlclient_window* window, wlclient_input_focus_handler handler) {
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    wdata->input_focus_handler = handler;
+}
+
 void wlclient_set_mouse_move_handler(wlclient_window* window, wlclient_mouse_move_handler handler) {
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
     wdata->mouse_move_handler = handler;
+}
+
+void wlclient_set_handle_mouse_press_handler(wlclient_window* window, wlclient_mouse_press_handler handler) {
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    wdata->mouse_press_handler = handler;
 }
 
 //======================================================================================================================
@@ -1076,7 +1090,6 @@ static void surface_node_render(wlclient_surface_node* node,  wlclient_color col
     }
     if (buf_idx < 0) {
         WLCLIENT_LOG_WARN("No available buffer for surface node rendering...");
-        WLCLIENT_ASSERT(false, "TODO: Can I assume this?");
         return;
     }
 
@@ -1144,7 +1157,9 @@ static void decor_handle_resize(wlclient_window_data* wdata) {
 static void decor_render(wlclient_window_data* wdata) {
     decor_handle_resize(wdata);
     if (!wdata->csd_hidden) {
+        WLCLIENT_LOG_DEBUG("Render decoration...");
         surface_node_render(&wdata->decor_node, wdata->decor_color);
+        WLCLIENT_LOG_DEBUG("Render decoration done");
     }
     else {
         WLCLIENT_LOG_DEBUG("Decoration hidden; will not render");
@@ -1238,10 +1253,12 @@ static void edges_handle_resize(wlclient_window_data* wdata) {
 static void edges_render(wlclient_window_data* wdata) {
     edges_handle_resize(wdata);
     if (!wdata->csd_hidden) {
+        WLCLIENT_LOG_DEBUG("Render edges...");
         for (u32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
             wlclient_surface_node* edge_node = &wdata->edge_nodes[i];
             surface_node_render(edge_node, wdata->edge_color);
         }
+        WLCLIENT_LOG_DEBUG("Render edges done");
     }
     else {
         WLCLIENT_LOG_DEBUG("Edges hidden; will not render");
@@ -1256,7 +1273,34 @@ static void edges_hide(wlclient_window_data* wdata) {
     }
 }
 
-static surface_type surface_get_type(wlclient_window_data* wdata, struct wl_surface* surface) {
+static u32 edges_determine_xdg_toplevel_resize_edge(
+    wlclient_window_data* wdata,
+    wlclient_surface_type surface_type,
+    f64 mouse_x
+) {
+    if (surface_type == ST_LEFT_EDGE)  return XDG_TOPLEVEL_RESIZE_EDGE_LEFT;
+    if (surface_type == ST_RIGHT_EDGE) return XDG_TOPLEVEL_RESIZE_EDGE_RIGHT;
+
+    const f64 t = (f64)wdata->edge_logical_thickness;
+    // Top/bottom edges span full window width, so their local x runs 0..window_logical_width.
+    const f64 w = (f64)wdata->window_logical_width;
+
+    if (surface_type == ST_TOP_EDGE) {
+        if (mouse_x < t)     return XDG_TOPLEVEL_RESIZE_EDGE_TOP | XDG_TOPLEVEL_RESIZE_EDGE_LEFT;
+        if (mouse_x > w - t) return XDG_TOPLEVEL_RESIZE_EDGE_TOP | XDG_TOPLEVEL_RESIZE_EDGE_RIGHT;
+        return XDG_TOPLEVEL_RESIZE_EDGE_TOP;
+    }
+
+    if (surface_type == ST_BOTTOM_EDGE) {
+        if (mouse_x < t)     return XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM | XDG_TOPLEVEL_RESIZE_EDGE_LEFT;
+        if (mouse_x > w - t) return XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM | XDG_TOPLEVEL_RESIZE_EDGE_RIGHT;
+        return XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM;
+    }
+
+    return XDG_TOPLEVEL_RESIZE_EDGE_NONE;
+}
+
+static wlclient_surface_type surface_get_type(wlclient_window_data* wdata, struct wl_surface* surface) {
     if (!surface) return ST_UNKNOWN;
     if (surface == wdata->surface) return ST_MAIN;
     if (surface == wdata->decor_node.child_surface) return ST_DECOR;
@@ -1811,6 +1855,130 @@ static void release_buffer(void *data, struct wl_buffer *wl_buffer) {
     *ready = true;
 }
 
+
+/**
+* This marks the end of a batch of pointer events.
+*
+* This happens:
+*   - after the compositor groups related pointer events into a frame
+*
+* Parameters:
+*   data      - user-provided pointer passed to wl_pointer_add_listener
+*   wl_pointer - the wl_pointer instance
+*/
+static void pointer_frame(void* data, struct wl_pointer* wl_pointer) {
+    (void)wl_pointer;
+
+    WLCLIENT_LOG_TRACE("Pointer frame");
+
+    wlclient_input_device* idev = data;
+    u32 flags = idev->mouse_in_flight_packet.pending_flags;
+
+    // Dispatch focus-lost first, on the surface that was actually left.
+    if ((flags & MIF_LOST_FOCUS) && idev->mouse_in_flight_packet.leave_surface) {
+        struct wl_surface* leave_surface = idev->mouse_in_flight_packet.leave_surface;
+        wlclient_surface_type leave_type = idev->mouse_in_flight_packet.leave_surface_type;
+        wlclient_window* leave_window = wl_surface_get_user_data(leave_surface);
+        wlclient_window_data* leave_wdata = _wlclient_get_wl_window_data(leave_window);
+
+        if (leave_type == ST_MAIN && leave_wdata->input_focus_handler) {
+            leave_wdata->input_focus_handler(leave_window, false);
+        }
+    }
+
+    // Dispatch everything else against the currently-entered surface.
+    struct wl_surface* target_surface = idev->mouse_in_flight_packet.target_surface;
+    if (target_surface) {
+        wlclient_surface_type target_type = idev->mouse_in_flight_packet.target_surface_type;
+        wlclient_window* target_window = wl_surface_get_user_data(target_surface);
+        wlclient_window_data* wdata = _wlclient_get_wl_window_data(target_window);
+
+        u32 button = idev->mouse_in_flight_packet.button;
+        f64 x = idev->mouse_in_flight_packet.x;
+        f64 y = idev->mouse_in_flight_packet.y;
+
+        WLCLIENT_LOG_DEBUG(
+            "\n --- Pointer frame ---"
+            "\n  window_id = %"PRIi32","
+            "\n  surface_type = %"PRIu32","
+            "\n  position = (x=%.3f, y=%.3f),"
+            "\n  has_motion = %s,"
+            "\n  button = %"PRIu32","
+            "\n  button_is_pressed = %s,"
+            "\n  button_is_released = %s,"
+            "\n  focus_gained = %s",
+            target_window->id,
+            target_type,
+            x, y,
+            (flags & MIF_HAS_MOTION) ? "true" : "false",
+            button,
+            (flags & MIF_IS_PRESSED) ? "true" : "false",
+            (flags & MIF_IS_RELEASED) ? "true" : "false",
+            (flags & MIF_GAINED_FOCUS) ? "true" : "false"
+        );
+
+        switch (target_type) {
+            case ST_MAIN: {
+                if (wdata->input_focus_handler && (flags & MIF_GAINED_FOCUS)) {
+                    wdata->input_focus_handler(target_window, true);
+                }
+                if (wdata->mouse_move_handler && (flags & MIF_HAS_MOTION)) {
+                    wdata->mouse_move_handler(target_window, x, y);
+                }
+                if (wdata->mouse_press_handler && (flags & MIF_IS_PRESSED)) {
+                    wdata->mouse_press_handler(target_window, button, true, x, y);
+                }
+                if (wdata->mouse_press_handler && (flags & MIF_IS_RELEASED)) {
+                    wdata->mouse_press_handler(target_window, button, false, x, y);
+                }
+                break;
+            }
+
+            case ST_DECOR: {
+                if ((flags & MIF_IS_PRESSED) && button == BTN_LEFT) {
+                    // Start an interactive, user-driven move of the surface when the left mouse button is presesd over
+                    // the decoration surface.
+                    xdg_toplevel_move(
+                        wdata->xdg_toplevel,
+                        idev->seat,
+                        idev->mouse_in_flight_packet.button_serial
+                    );
+                }
+                break;
+            }
+            case ST_TOP_EDGE:
+            case ST_RIGHT_EDGE:
+            case ST_BOTTOM_EDGE:
+            case ST_LEFT_EDGE: {
+                if ((flags & MIF_IS_PRESSED) && button == BTN_LEFT) {
+                    // Start an interactive, user-driven resize of the surface when the left mouse button is presesd
+                    // over one of the decoration's edge surfaces.
+                    u32 edge = edges_determine_xdg_toplevel_resize_edge(wdata, target_type, x);
+                    xdg_toplevel_resize(
+                        wdata->xdg_toplevel,
+                        idev->seat,
+                        idev->mouse_in_flight_packet.button_serial,
+                        edge
+                    );
+                }
+                break;
+            }
+
+            case ST_UNKNOWN:
+            case ST_SENTINEL:
+                WLCLIENT_LOG_WARN("Pointer frame on unknown surface type");
+                break;
+        }
+    }
+
+    // Reset certain state for this frame
+    {
+        idev->mouse_in_flight_packet.pending_flags = MIF_NONE;
+        idev->mouse_in_flight_packet.leave_surface = NULL;
+        idev->mouse_in_flight_packet.leave_surface_type = ST_UNKNOWN;
+    }
+}
+
 /**
 * This notifies the client that pointer focus entered one of its surfaces.
 *
@@ -1832,14 +2000,17 @@ static void pointer_enter(void* data, struct wl_pointer* wl_pointer, u32 serial,
     wlclient_window* window = wl_surface_get_user_data(surface);
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
     wlclient_input_device* idev = data;
+    wlclient_surface_type stype = surface_get_type(wdata, surface);
+
     idev->mouse_in_flight_packet.target_surface = surface;
-    idev->mouse_in_flight_packet.focus = true;
+    idev->mouse_in_flight_packet.target_surface_type = stype;
+    idev->mouse_in_flight_packet.pending_flags |= MIF_GAINED_FOCUS;
     idev->mouse_in_flight_packet.x = wl_fixed_to_double(surface_x);
     idev->mouse_in_flight_packet.y = wl_fixed_to_double(surface_y);
 
     WLCLIENT_LOG_DEBUG(
         "Pointer entered at surface type=%"PRIu32" for window(id=%"PRIu32") at position: x=%f, y=%f",
-        surface_get_type(wdata, surface),
+        stype,
         window->id,
         wl_fixed_to_double(surface_x),
         wl_fixed_to_double(surface_y)
@@ -1860,20 +2031,23 @@ static void pointer_enter(void* data, struct wl_pointer* wl_pointer, u32 serial,
 */
 static void pointer_leave(void* data, struct wl_pointer* wl_pointer, u32 serial, struct wl_surface* surface) {
     (void)serial;
-    (void)data;
     (void)wl_pointer;
 
     wlclient_window* window = wl_surface_get_user_data(surface);
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
     wlclient_input_device* idev = data;
-    idev->mouse_in_flight_packet.target_surface = surface;
-    idev->mouse_in_flight_packet.focus = false;
+    wlclient_surface_type stype = surface_get_type(wdata, surface);
 
-    WLCLIENT_LOG_DEBUG(
-        "Pointer left surface type=%"PRIu32" on window(id=%"PRIu32")",
-        surface_get_type(wdata, surface),
-        window->id
-    );
+    // Record the surface losing focus in its own slot. If an enter follows in the same frame it will populate
+    // target_surface separately, so both dispatches survive.
+    idev->mouse_in_flight_packet.leave_surface = surface;
+    idev->mouse_in_flight_packet.leave_surface_type = stype;
+    idev->mouse_in_flight_packet.pending_flags |= MIF_LOST_FOCUS;
+    // After leave, there's no currently-entered surface unless an enter follows in the same frame.
+    idev->mouse_in_flight_packet.target_surface = NULL;
+    idev->mouse_in_flight_packet.target_surface_type = ST_UNKNOWN;
+
+    WLCLIENT_LOG_DEBUG("Pointer left surface type=%"PRIu32" on window(id=%"PRIu32")", stype, window->id);
 }
 
 /**
@@ -1897,7 +2071,7 @@ static void pointer_motion(void* data, struct wl_pointer* wl_pointer, u32 time, 
     f64 y = wl_fixed_to_double(surface_y);
 
     wlclient_input_device* idev = data;
-    idev->mouse_in_flight_packet.has_motion = true;
+    idev->mouse_in_flight_packet.pending_flags |= MIF_HAS_MOTION;
     idev->mouse_in_flight_packet.x = x;
     idev->mouse_in_flight_packet.y = y;
 
@@ -1921,12 +2095,13 @@ static void pointer_motion(void* data, struct wl_pointer* wl_pointer, u32 time, 
 static void pointer_button(void* data, struct wl_pointer* wl_pointer, u32 serial, u32 time, u32 button, u32 state) {
     (void)wl_pointer;
     (void)time;
-    (void)serial;
 
     wlclient_input_device* idev = data;
-    idev->mouse_in_flight_packet.has_button = true;
+    idev->mouse_in_flight_packet.pending_flags &= ~(MIF_IS_PRESSED | MIF_IS_RELEASED); // unset both
+    idev->mouse_in_flight_packet.pending_flags |=
+        (state == WL_POINTER_BUTTON_STATE_PRESSED) ? MIF_IS_PRESSED : MIF_IS_RELEASED; // set one
     idev->mouse_in_flight_packet.button = button;
-    idev->mouse_in_flight_packet.button_state = state;
+    idev->mouse_in_flight_packet.button_serial = serial;
 
     WLCLIENT_LOG_TRACE(
         "Pointer button: serial=%" PRIu32 ", time=%" PRIu32 ", button=%" PRIu32 ", state=%" PRIu32,
@@ -1954,57 +2129,6 @@ static void pointer_axis(void* data, struct wl_pointer* wl_pointer, u32 time, u3
     WLCLIENT_LOG_TRACE(
         "Pointer axis: time=%" PRIu32 ", axis=%" PRIu32 ", value=%f",
         time, axis, wl_fixed_to_double(value)
-    );
-}
-
-/**
-* This marks the end of a batch of pointer events.
-*
-* This happens:
-*   - after the compositor groups related pointer events into a frame
-*
-* Parameters:
-*   data      - user-provided pointer passed to wl_pointer_add_listener
-*   wl_pointer - the wl_pointer instance
-*/
-static void pointer_frame(void* data, struct wl_pointer* wl_pointer) {
-    (void)wl_pointer;
-
-    WLCLIENT_LOG_TRACE("Pointer frame");
-
-    wlclient_input_device* idev = data;
-    struct wl_surface* target_surface = idev->mouse_in_flight_packet.target_surface;
-
-    if (!target_surface) {
-        WLCLIENT_LOG_WARN("Focused surface is not set.");
-        return;
-    }
-
-    wlclient_window* target_window = wl_surface_get_user_data(target_surface);
-    wlclient_window_data* target_wdata = _wlclient_get_wl_window_data(target_window);
-
-    bool has_motion = idev->mouse_in_flight_packet.has_motion;
-    f64 x = idev->mouse_in_flight_packet.x;
-    f64 y = idev->mouse_in_flight_packet.y;
-
-    WLCLIENT_LOG_DEBUG(
-        "\n --- Pointer frame ---"
-        "\n  window_id = %"PRIi32","
-        "\n  surface_type = %"PRIu32","
-        "\n  position = (x=%.3f, y=%.3f),"
-        "\n  has_motion = %s,"
-        "\n  has_button = %s,"
-        "\n  button = %"PRIu32","
-        "\n  button_state = %"PRIu32","
-        "\n  focus = %s",
-        target_window->id,
-        surface_get_type(target_wdata, target_surface),
-        x, y,
-        has_motion ? "true" : "false",
-        idev->mouse_in_flight_packet.has_button ? "true" : "false",
-        idev->mouse_in_flight_packet.button,
-        idev->mouse_in_flight_packet.button_state,
-        idev->mouse_in_flight_packet.focus ? "true" : "false"
     );
 }
 
