@@ -56,7 +56,7 @@ i32 main(void) {
 
     wlclient_error_code result_code = 0;
 
-    wlclient_log_set_level(WLCLIENT_LOG_LEVEL_INFO);
+    wlclient_log_set_level(WLCLIENT_LOG_LEVEL_TRACE);
     result_code = wlclient_init(NULL);
     if (result_code != WLCLIENT_ERROR_OK) {
         printf("ERROR - %d\n", result_code);
@@ -136,12 +136,6 @@ i32 main(void) {
     glViewport(0, 0, (i32)fb_w, (i32)fb_h);
 
     while (g_running) {
-        result_code = wlclient_poll_events(100);
-        if (result_code != WLCLIENT_ERROR_OK && result_code != WLCLIENT_ERROR_EVENT_POLL_TIMEOUT) {
-            printf("POLLING FAILED ERROR - %d\n", result_code);
-            goto done;
-        }
-
         // wlclient_toggle_window_decor(&window);
 
         glClear(GL_COLOR_BUFFER_BIT);
@@ -149,6 +143,12 @@ i32 main(void) {
         result_code = wlclient_egl_swap_buffers(&window);
         if (result_code != WLCLIENT_ERROR_OK) {
             printf("SWAP BUFFERS FAILED ERROR - %d\n", result_code);
+            goto done;
+        }
+
+        result_code = wlclient_poll_events(0);
+        if (result_code != WLCLIENT_ERROR_OK && result_code != WLCLIENT_ERROR_EVENT_POLL_TIMEOUT) {
+            printf("POLLING FAILED ERROR - %d\n", result_code);
             goto done;
         }
 
