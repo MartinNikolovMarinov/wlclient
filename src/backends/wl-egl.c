@@ -1,16 +1,22 @@
+#define _GNU_SOURCE
+
 #include "wl-egl.h"
 
 #include "debug.h"
 #include "types.h"
 #include "wl-client.h"
+#include "wl-utils.h"
 
 #include <inttypes.h>
 #include <stdbool.h>
 #include <string.h>
-#include <stdio.h>
+#include <time.h>
 
 #include <EGL/egl.h>
 #include <wayland-egl.h>
+
+#include "wayland-client-protocol.h"
+#include "wayland-client-core.h"
 
 #define ENSURE_OR_GOTO_ERR(expr)                                                                 \
 do {                                                                                             \
@@ -24,6 +30,7 @@ while(0)
 
 static EGLDisplay g_egl_display = EGL_NO_DISPLAY;
 static EGLConfig g_egl_config = NULL;
+static i32 g_swap_interval = 1;
 
 #define WLCLIENT_EGL_MAX_ATTRIBUTES 128
 static EGLint g_config_attribs[WLCLIENT_EGL_MAX_ATTRIBUTES] = {EGL_NONE};
@@ -36,6 +43,9 @@ typedef struct wlclient_egl_window_data {
     struct wl_egl_window* egl_window;
     EGLContext egl_context;
     EGLSurface egl_surface;
+    struct wl_event_queue* frame_queue;
+    struct wl_callback* frame_callback;
+    bool waiting_for_frame;
 } wlclient_egl_window_data;
 
 static wlclient_egl_window_data g_egl_window_data[WLCLIENT_WINDOWS_COUNT] = {0};
@@ -48,6 +58,7 @@ static void egl_shutdown(void);
 static void egl_destroy_window(const wlclient_window* window);
 static void egl_resize_window(const wlclient_window* window, u32 framebuffer_width, u32 framebuffer_height);
 static void egl_scale_change_window(const wlclient_window* window, f32 factor);
+static void egl_frame_done(void* data, struct wl_callback* callback, u32 callback_data);
 
 //======================================================================================================================
 // Helper Declarations
@@ -57,6 +68,9 @@ static void egl_trace_attrs(const EGLint* attribs, const char* label);
 
 static void egl_reset_config_attrs(void);
 static void egl_reset_context_attrs(void);
+
+static bool egl_wait_for_frame(wlclient_egl_window_data* egl_wdata);
+static bool egl_request_next_frame(wlclient_egl_window_data* egl_wdata, const wlclient_window_data* wdata);
 
 //======================================================================================================================
 // PUBLIC
@@ -79,6 +93,7 @@ void wlclient_egl_add_context_attr(EGLint key, EGLint value) {
 wlclient_error_code wlclient_egl_set_swap_interval(i32 interval) {
     EGLBoolean ret = eglSwapInterval(g_egl_display, interval);
     ENSURE_OR_GOTO_ERR(ret == EGL_TRUE);
+    g_swap_interval = interval;
     return WLCLIENT_ERROR_OK;
 error:
     return WLCLIENT_ERROR_EGL_SET_SWAP_INTERVAL_FAILED;
@@ -140,6 +155,9 @@ wlclient_error_code wlclient_egl_config_window(wlclient_window* window) {
     );
     ENSURE_OR_GOTO_ERR(egl_wdata->egl_window);
 
+    egl_wdata->frame_queue = wl_display_create_queue(_wlclient_get_wl_display());
+    ENSURE_OR_GOTO_ERR(egl_wdata->frame_queue);
+
     g_context_attribs[g_context_attribs_count] = EGL_NONE;
     egl_trace_attrs(g_context_attribs, "context");
     egl_wdata->egl_context = eglCreateContext(g_egl_display, g_egl_config, EGL_NO_CONTEXT, g_context_attribs);
@@ -186,6 +204,12 @@ error:
 wlclient_error_code wlclient_egl_swap_buffers(const wlclient_window* window) {
     wlclient_egl_window_data* egl_wdata = &g_egl_window_data[window->id];
     WLCLIENT_ASSERT(egl_wdata->used, "EGL Window is marked as unused.");
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+
+    if (g_swap_interval > 0) {
+        ENSURE_OR_GOTO_ERR(egl_wait_for_frame(egl_wdata));
+        ENSURE_OR_GOTO_ERR(egl_request_next_frame(egl_wdata, wdata));
+    }
 
     EGLBoolean res = eglSwapBuffers(g_egl_display, egl_wdata->egl_surface);
     ENSURE_OR_GOTO_ERR(res == EGL_TRUE);
@@ -239,6 +263,8 @@ static void egl_destroy_window(const wlclient_window* window) {
     if (egl_wdata->egl_surface != EGL_NO_SURFACE) eglDestroySurface(g_egl_display, egl_wdata->egl_surface);
     if (egl_wdata->egl_context != EGL_NO_CONTEXT) eglDestroyContext(g_egl_display, egl_wdata->egl_context);
     if (egl_wdata->egl_window) wl_egl_window_destroy(egl_wdata->egl_window);
+    if (egl_wdata->frame_callback) wl_callback_destroy(egl_wdata->frame_callback);
+    if (egl_wdata->frame_queue) wl_event_queue_destroy(egl_wdata->frame_queue);
 
     memset(egl_wdata, 0, sizeof(*egl_wdata));
 
@@ -266,6 +292,17 @@ static void egl_scale_change_window(const wlclient_window* window, f32 factor) {
     // FIXME: [SCALING] How do I handle this?
 }
 
+static void egl_frame_done(void* data, struct wl_callback* callback, u32 callback_data) {
+    (void)callback_data;
+
+    wlclient_egl_window_data* egl_wdata = data;
+    if (egl_wdata->frame_callback == callback) {
+        egl_wdata->frame_callback = NULL;
+        egl_wdata->waiting_for_frame = false;
+    }
+    wl_callback_destroy(callback);
+}
+
 //======================================================================================================================
 // Helper Implementations
 //======================================================================================================================
@@ -289,4 +326,54 @@ static void egl_reset_context_attrs(void) {
     memset(g_context_attribs, 0, sizeof(g_context_attribs));
     g_context_attribs[0] = EGL_NONE;
     g_context_attribs_count = 0;
+}
+
+static bool egl_wait_for_frame(wlclient_egl_window_data* egl_wdata) {
+    if (!egl_wdata->frame_callback || !egl_wdata->waiting_for_frame) {
+        return true;
+    }
+
+    static const u64 FRAME_TIMEOUT_NS = 1 * WLCLIENT_SECOND;
+    const struct timespec timeout = wlclient_ns_to_timespec(FRAME_TIMEOUT_NS);
+
+    while (egl_wdata->waiting_for_frame) {
+        i32 ret = wl_display_dispatch_queue_timeout(_wlclient_get_wl_display(), egl_wdata->frame_queue, &timeout);
+        if (ret < 0) {
+            WLCLIENT_LOG_WARN("Failed to dispatch EGL frame callback queue");
+            return false;
+        }
+        if (ret == 0 && egl_wdata->waiting_for_frame) {
+            WLCLIENT_LOG_WARN("Timed out waiting for EGL frame callback");
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool egl_request_next_frame(wlclient_egl_window_data* egl_wdata, const wlclient_window_data* wdata) {
+    static const struct wl_callback_listener listener = {
+        .done = egl_frame_done,
+    };
+
+    WLCLIENT_ASSERT(!egl_wdata->frame_callback, "[BUG] EGL frame callback already pending");
+
+    egl_wdata->frame_callback = wl_surface_frame(wdata->surface);
+    if (!egl_wdata->frame_callback) {
+        WLCLIENT_LOG_WARN("Failed to create EGL frame callback");
+        return false;
+    }
+
+    wl_proxy_set_queue((struct wl_proxy*)egl_wdata->frame_callback, egl_wdata->frame_queue);
+
+    i32 ret = wl_callback_add_listener(egl_wdata->frame_callback, &listener, egl_wdata);
+    if (ret < 0) {
+        wl_callback_destroy(egl_wdata->frame_callback);
+        egl_wdata->frame_callback = NULL;
+        WLCLIENT_LOG_WARN("Failed to add EGL frame callback listener");
+        return false;
+    }
+
+    egl_wdata->waiting_for_frame = true;
+    return true;
 }

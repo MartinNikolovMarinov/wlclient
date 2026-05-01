@@ -122,7 +122,7 @@ i32 main(void) {
         }
 
         // Configure vsync:
-        result_code = wlclient_egl_set_swap_interval(0);
+        result_code = wlclient_egl_set_swap_interval(1);
         if (result_code != WLCLIENT_ERROR_OK) {
             printf("ERROR - %d\n", result_code);
             goto done;
