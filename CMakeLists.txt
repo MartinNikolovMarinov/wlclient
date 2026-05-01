@@ -146,14 +146,14 @@ if (WLCLIENT_BUILD_SANDBOX)
     add_executable(${target_sandbox} ${src_sandbox})
     wlclient_target_set_default_c_flags(${target_sandbox} ${WLCLIENT_DEBUG} false)
     target_link_libraries(${target_sandbox} PUBLIC ${target_wlclient})
-    target_link_libraries(${target_sandbox} PRIVATE wayland-egl EGL GLESv2)
+    target_link_libraries(${target_sandbox} PRIVATE wayland-egl EGL GL)
 endif()
 
 if (WLCLIENT_BUILD_TESTS)
     add_executable(${target_test} ${src_test})
     wlclient_target_set_default_c_flags(${target_test} ${WLCLIENT_DEBUG} false)
     target_link_libraries(${target_test} PUBLIC ${target_wlclient})
-    target_link_libraries(${target_test} PRIVATE wayland-egl EGL GLESv2)
+    target_link_libraries(${target_test} PRIVATE wayland-egl EGL GL)
 
     target_include_directories(${target_test} PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/tests
