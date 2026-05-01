@@ -104,6 +104,9 @@ set(src_test
 
 # ---------------------------------------- Begin Create Executables ----------------------------------------------------
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
+
 if(WLCLIENT_LIBRARY_SHARED)
     add_library(${target_wlclient} SHARED ${src_wlclient})
     # Set symbols visibility to be hidden by default. This is done to unify behavior across platforms.
@@ -133,7 +136,7 @@ target_compile_definitions(${target_wlclient} PRIVATE
     "WLCLIENT_LIBRARY_SHARED=$<BOOL:${WLCLIENT_LIBRARY_SHARED}>"
     "WLCLIENT_LIBRARY_BUILD=1"
 )
-target_link_libraries(${target_wlclient} PRIVATE wayland-client)
+target_link_libraries(${target_wlclient} PRIVATE wayland-client PkgConfig::XKBCOMMON)
 
 if (WLCLIENT_BACKEND_EGL)
     target_compile_definitions(${target_wlclient} PUBLIC "WLCLIENT_BACKEND_EGL=1")

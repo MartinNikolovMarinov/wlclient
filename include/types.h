@@ -41,6 +41,15 @@ typedef u32             rune; /* Runes represent a single UTF-32 encoded charact
 #define WLCLIENT_FRAMEBUFFERS_COUNT 2
 #define WLCLIENT_MAX_INPUT_DEVICES 5
 
+#define WLCLIENT_MOD_SHIFT     (1u << 0)
+#define WLCLIENT_MOD_CONTROL   (1u << 1)
+#define WLCLIENT_MOD_ALT       (1u << 2)
+#define WLCLIENT_MOD_SUPER     (1u << 3)
+#define WLCLIENT_MOD_CAPS_LOCK (1u << 4)
+#define WLCLIENT_MOD_NUM_LOCK  (1u << 5)
+
+#define WLCLIENT_MOD_HAS(modifiers, flag) (((modifiers) & (flag)) != 0)
+
 typedef enum wlclient_error_code {
     WLCLIENT_ERROR_OK,
 
@@ -66,11 +75,24 @@ typedef void (*wlclient_close_handler)(struct wlclient_window* window);
 typedef void (*wlclient_size_change_handler)(struct wlclient_window* window, u32 width, u32 height);
 typedef void (*wlclient_framebuffer_change_handler)(struct wlclient_window* window, u32 width, u32 height);
 typedef void (*wlclient_scale_factor_change_handler)(struct wlclient_window* window, f32 factor);
-typedef void (*wlclient_input_focus_handler)(struct wlclient_window* window, bool hasInputFocus);
 
 // Mouse input events:
+typedef void (*wlclient_mouse_focus_handler)(struct wlclient_window* window, bool hasMouseFocus);
 typedef void (*wlclient_mouse_move_handler)(struct wlclient_window* window, f64 x, f64 y);
 typedef void (*wlclient_mouse_press_handler)(struct wlclient_window* window, u32 button, bool isPressed, f64 x, f64 y);
+
+// Keyboard input events:
+typedef void (*wlclient_keyboard_focus_handler)(struct wlclient_window* window, bool hasKeyboardFocus);
+typedef void (*wlclient_keyboard_key_handler)(
+    struct wlclient_window* window,
+    u32 keycode,
+    u32 keysym,
+    bool isPressed,
+    u32 modifiers
+);
+typedef void (*wlclient_keyboard_text_handler)(struct wlclient_window* window, const char* utf8, usize len);
+typedef void (*wlclient_keyboard_modifiers_handler)(struct wlclient_window* window, u32 modifiers);
+typedef void (*wlclient_keyboard_repeat_info_handler)(struct wlclient_window* window, i32 rate, i32 delay);
 
 typedef struct wlclient_allocator {
     void* (*alloc)(usize size);
@@ -131,6 +153,12 @@ typedef struct wlclient_input_device {
     char* seat_name;
     struct wl_pointer* pointer;
     struct wl_keyboard* keyboard;
+    struct wl_surface* keyboard_target_surface;
+    struct xkb_context* xkb_context;
+    struct xkb_keymap* xkb_keymap;
+    struct xkb_state* xkb_state;
+    struct xkb_compose_table* xkb_compose_table;
+    struct xkb_compose_state* xkb_compose_state;
 } wlclient_input_device;
 
 typedef enum wlclient_edge {
@@ -214,9 +242,14 @@ typedef struct wlclient_window_data {
     wlclient_size_change_handler size_change_handler;
     wlclient_framebuffer_change_handler framebuffer_change_handler;
     wlclient_scale_factor_change_handler scale_factor_change_handler;
-    wlclient_input_focus_handler input_focus_handler;
+    wlclient_mouse_focus_handler mouse_focus_handler;
     wlclient_mouse_move_handler mouse_move_handler;
     wlclient_mouse_press_handler mouse_press_handler;
+    wlclient_keyboard_focus_handler keyboard_focus_handler;
+    wlclient_keyboard_key_handler keyboard_key_handler;
+    wlclient_keyboard_text_handler keyboard_text_handler;
+    wlclient_keyboard_modifiers_handler keyboard_modifiers_handler;
+    wlclient_keyboard_repeat_info_handler keyboard_repeat_info_handler;
 } wlclient_window_data;
 
 typedef struct wlclient_global_state {

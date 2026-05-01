@@ -7,6 +7,7 @@
 #include "wl-utils.h"
 
 #include <errno.h>
+#include <locale.h>
 #include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
@@ -20,6 +21,8 @@
 #include <wayland-util.h>
 
 #include <linux/input-event-codes.h>
+#include <xkbcommon/xkbcommon.h>
+#include <xkbcommon/xkbcommon-compose.h>
 
 // TODO: [FRACTIONAL_SCALING] Every calculation that uses scaling will have to change when fractional scaling is introduced.
 // TODO: [ALPHA_BLENDING] The decoration alpha blending is broken, or possibly not configured; needs investigation.
@@ -61,6 +64,7 @@ static void destroy_input_device(wlclient_input_device* input_device);
 static void destroy_input_device_seat(wlclient_input_device* input_device);
 static void destroy_input_device_pointer(wlclient_input_device* input_device);
 static void destroy_input_device_keyboard(wlclient_input_device* input_device);
+static void destroy_input_device_xkb(wlclient_input_device* input_device);
 static void store_new_input_device(u32 id, struct wl_seat* seat, u32 seat_version);
 static wlclient_input_device* find_input_device_by_seat(struct wl_seat* seat);
 static i32 find_input_device_index_by_id(u32 id);
@@ -101,6 +105,8 @@ static u32 edges_determine_xdg_toplevel_resize_edge(
 );
 
 static wlclient_surface_type surface_get_type(wlclient_window_data* wdata, struct wl_surface* surface);
+static u32 keyboard_translate_modifiers(wlclient_input_device* input_device);
+static void keyboard_dispatch_text(wlclient_input_device* input_device, wlclient_window_data* wdata, wlclient_window* window, u32 keycode, u32 keysym);
 
 //======================================================================================================================
 // Wayland Handlers
@@ -632,9 +638,9 @@ void wlclient_set_scale_factor_change_handler(wlclient_window* window, wlclient_
     wdata->scale_factor_change_handler = handler;
 }
 
-void wlclient_set_input_focus_handler(wlclient_window* window, wlclient_input_focus_handler handler) {
+void wlclient_set_mouse_focus_handler(wlclient_window* window, wlclient_mouse_focus_handler handler) {
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
-    wdata->input_focus_handler = handler;
+    wdata->mouse_focus_handler = handler;
 }
 
 void wlclient_set_mouse_move_handler(wlclient_window* window, wlclient_mouse_move_handler handler) {
@@ -642,9 +648,34 @@ void wlclient_set_mouse_move_handler(wlclient_window* window, wlclient_mouse_mov
     wdata->mouse_move_handler = handler;
 }
 
-void wlclient_set_handle_mouse_press_handler(wlclient_window* window, wlclient_mouse_press_handler handler) {
+void wlclient_set_mouse_press_handler(wlclient_window* window, wlclient_mouse_press_handler handler) {
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
     wdata->mouse_press_handler = handler;
+}
+
+void wlclient_set_keyboard_focus_handler(wlclient_window* window, wlclient_keyboard_focus_handler handler) {
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    wdata->keyboard_focus_handler = handler;
+}
+
+void wlclient_set_keyboard_key_handler(wlclient_window* window, wlclient_keyboard_key_handler handler) {
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    wdata->keyboard_key_handler = handler;
+}
+
+void wlclient_set_keyboard_text_handler(wlclient_window* window, wlclient_keyboard_text_handler handler) {
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    wdata->keyboard_text_handler = handler;
+}
+
+void wlclient_set_keyboard_modifiers_handler(wlclient_window* window, wlclient_keyboard_modifiers_handler handler) {
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    wdata->keyboard_modifiers_handler = handler;
+}
+
+void wlclient_set_keyboard_repeat_info_handler(wlclient_window* window, wlclient_keyboard_repeat_info_handler handler) {
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    wdata->keyboard_repeat_info_handler = handler;
 }
 
 //======================================================================================================================
@@ -785,6 +816,34 @@ static void destroy_input_device_keyboard(wlclient_input_device* input_device) {
     }
 
     input_device->keyboard = NULL;
+    input_device->keyboard_target_surface = NULL;
+    destroy_input_device_xkb(input_device);
+}
+
+static void destroy_input_device_xkb(wlclient_input_device* input_device) {
+    if (!input_device) return;
+
+    if (input_device->xkb_compose_state) {
+        xkb_compose_state_unref(input_device->xkb_compose_state);
+    }
+    if (input_device->xkb_compose_table) {
+        xkb_compose_table_unref(input_device->xkb_compose_table);
+    }
+    if (input_device->xkb_state) {
+        xkb_state_unref(input_device->xkb_state);
+    }
+    if (input_device->xkb_keymap) {
+        xkb_keymap_unref(input_device->xkb_keymap);
+    }
+    if (input_device->xkb_context) {
+        xkb_context_unref(input_device->xkb_context);
+    }
+
+    input_device->xkb_state = NULL;
+    input_device->xkb_keymap = NULL;
+    input_device->xkb_context = NULL;
+    input_device->xkb_compose_table = NULL;
+    input_device->xkb_compose_state = NULL;
 }
 
 
@@ -1309,6 +1368,74 @@ static wlclient_surface_type surface_get_type(wlclient_window_data* wdata, struc
     if (surface == wdata->edge_nodes[WLCLIENT_EDGE_LEFT].child_surface) return ST_LEFT_EDGE;
     if (surface == wdata->edge_nodes[WLCLIENT_EDGE_RIGHT].child_surface) return ST_RIGHT_EDGE;
     return ST_UNKNOWN;
+}
+
+static u32 keyboard_translate_modifiers(wlclient_input_device* input_device) {
+    if (!input_device || !input_device->xkb_state) return 0;
+
+    u32 modifiers = 0;
+
+    if (xkb_state_mod_name_is_active(input_device->xkb_state, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE) > 0) {
+        modifiers |= WLCLIENT_MOD_SHIFT;
+    }
+    if (xkb_state_mod_name_is_active(input_device->xkb_state, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE) > 0) {
+        modifiers |= WLCLIENT_MOD_CONTROL;
+    }
+    if (xkb_state_mod_name_is_active(input_device->xkb_state, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE) > 0) {
+        modifiers |= WLCLIENT_MOD_ALT;
+    }
+    if (xkb_state_mod_name_is_active(input_device->xkb_state, XKB_MOD_NAME_LOGO, XKB_STATE_MODS_EFFECTIVE) > 0) {
+        modifiers |= WLCLIENT_MOD_SUPER;
+    }
+    if (xkb_state_mod_name_is_active(input_device->xkb_state, XKB_MOD_NAME_CAPS, XKB_STATE_MODS_LOCKED) > 0) {
+        modifiers |= WLCLIENT_MOD_CAPS_LOCK;
+    }
+    if (xkb_state_mod_name_is_active(input_device->xkb_state, XKB_MOD_NAME_NUM, XKB_STATE_MODS_LOCKED) > 0) {
+        modifiers |= WLCLIENT_MOD_NUM_LOCK;
+    }
+
+    return modifiers;
+}
+
+static void keyboard_dispatch_text(
+    wlclient_input_device* input_device,
+    wlclient_window_data* wdata,
+    wlclient_window* window,
+    u32 keycode,
+    u32 keysym
+) {
+    if (!input_device || !input_device->xkb_state || !wdata || !wdata->keyboard_text_handler) return;
+
+    char utf8[64];
+
+    if (input_device->xkb_compose_state && keysym != XKB_KEY_NoSymbol) {
+        enum xkb_compose_feed_result feed_result = xkb_compose_state_feed(input_device->xkb_compose_state, keysym);
+        if (feed_result == XKB_COMPOSE_FEED_ACCEPTED) {
+            enum xkb_compose_status status = xkb_compose_state_get_status(input_device->xkb_compose_state);
+            switch (status) {
+                case XKB_COMPOSE_COMPOSED: {
+                    i32 len = xkb_compose_state_get_utf8(input_device->xkb_compose_state, utf8, sizeof(utf8));
+                    if (len > 0 && (usize)len < sizeof(utf8)) {
+                        wdata->keyboard_text_handler(window, utf8, (usize)len);
+                    }
+                    xkb_compose_state_reset(input_device->xkb_compose_state);
+                    return;
+                }
+                case XKB_COMPOSE_COMPOSING:
+                    return;
+                case XKB_COMPOSE_CANCELLED:
+                    xkb_compose_state_reset(input_device->xkb_compose_state);
+                    return;
+                case XKB_COMPOSE_NOTHING:
+                    break;
+            }
+        }
+    }
+
+    i32 len = xkb_state_key_get_utf8(input_device->xkb_state, keycode + 8, utf8, sizeof(utf8));
+    if (len > 0 && (usize)len < sizeof(utf8)) {
+        wdata->keyboard_text_handler(window, utf8, (usize)len);
+    }
 }
 
 //======================================================================================================================
@@ -1881,8 +2008,8 @@ static void pointer_frame(void* data, struct wl_pointer* wl_pointer) {
         wlclient_window* leave_window = wl_surface_get_user_data(leave_surface);
         wlclient_window_data* leave_wdata = _wlclient_get_wl_window_data(leave_window);
 
-        if (leave_type == ST_MAIN && leave_wdata->input_focus_handler) {
-            leave_wdata->input_focus_handler(leave_window, false);
+        if (leave_type == ST_MAIN && leave_wdata->mouse_focus_handler) {
+            leave_wdata->mouse_focus_handler(leave_window, false);
         }
     }
 
@@ -1919,8 +2046,8 @@ static void pointer_frame(void* data, struct wl_pointer* wl_pointer) {
 
         switch (target_type) {
             case ST_MAIN: {
-                if (wdata->input_focus_handler && (flags & MIF_GAINED_FOCUS)) {
-                    wdata->input_focus_handler(target_window, true);
+                if (wdata->mouse_focus_handler && (flags & MIF_GAINED_FOCUS)) {
+                    wdata->mouse_focus_handler(target_window, true);
                 }
                 if (wdata->mouse_move_handler && (flags & MIF_HAS_MOTION)) {
                     wdata->mouse_move_handler(target_window, x, y);
@@ -2241,12 +2368,81 @@ static void pointer_axis_relative_direction(void* data, struct wl_pointer* wl_po
 *   size        - size in bytes of the keymap payload
 */
 static void keyboard_keymap(void* data, struct wl_keyboard* wl_keyboard, u32 format, i32 fd, u32 size) {
-    (void)data;
     (void)wl_keyboard;
-    (void)size;
 
-    // TODO: The keymap is ignored for now; close the fd to avoid leaking it.
-    if (fd >= 0) close(fd);
+    wlclient_input_device* idev = data;
+    destroy_input_device_xkb(idev);
+
+    if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
+        WLCLIENT_LOG_WARN("Unsupported keyboard keymap format: %" PRIu32, format);
+        if (fd >= 0) close(fd);
+        return;
+    }
+
+    if (fd < 0 || size == 0) {
+        WLCLIENT_LOG_WARN("Invalid keyboard keymap payload");
+        if (fd >= 0) close(fd);
+        return;
+    }
+
+    char* keymap_data = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (keymap_data == MAP_FAILED) {
+        WLCLIENT_LOG_WARN("Failed to map keyboard keymap: %s", strerror(errno));
+        close(fd);
+        return;
+    }
+
+    idev->xkb_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    if (!idev->xkb_context) {
+        WLCLIENT_LOG_WARN("Failed to create XKB context");
+        munmap(keymap_data, size);
+        close(fd);
+        return;
+    }
+
+    idev->xkb_keymap = xkb_keymap_new_from_string(
+        idev->xkb_context,
+        keymap_data,
+        XKB_KEYMAP_FORMAT_TEXT_V1,
+        XKB_KEYMAP_COMPILE_NO_FLAGS
+    );
+
+    munmap(keymap_data, size);
+    close(fd);
+
+    if (!idev->xkb_keymap) {
+        WLCLIENT_LOG_WARN("Failed to create XKB keymap");
+        destroy_input_device_xkb(idev);
+        return;
+    }
+
+    idev->xkb_state = xkb_state_new(idev->xkb_keymap);
+    if (!idev->xkb_state) {
+        WLCLIENT_LOG_WARN("Failed to create XKB state");
+        destroy_input_device_xkb(idev);
+        return;
+    }
+
+    const char* locale = setlocale(LC_CTYPE, NULL);
+    if (!locale) locale = "C";
+
+    idev->xkb_compose_table = xkb_compose_table_new_from_locale(
+        idev->xkb_context,
+        locale,
+        XKB_COMPOSE_COMPILE_NO_FLAGS
+    );
+    if (idev->xkb_compose_table) {
+        idev->xkb_compose_state = xkb_compose_state_new(
+            idev->xkb_compose_table,
+            XKB_COMPOSE_STATE_NO_FLAGS
+        );
+        if (!idev->xkb_compose_state) {
+            WLCLIENT_LOG_WARN("Failed to create XKB compose state");
+        }
+    }
+    else {
+        WLCLIENT_LOG_WARN("Failed to create XKB compose table for locale '%s'", locale);
+    }
 
     WLCLIENT_LOG_TRACE("Keyboard keymap: format=%" PRIu32, format);
 }
@@ -2265,10 +2461,17 @@ static void keyboard_keymap(void* data, struct wl_keyboard* wl_keyboard, u32 for
 *   keys        - array of keycodes already pressed when focus was entered
 */
 static void keyboard_enter(void* data, struct wl_keyboard* wl_keyboard, u32 serial, struct wl_surface* surface, struct wl_array* keys) {
-    (void)data;
     (void)wl_keyboard;
-    (void)surface;
     (void)keys;
+
+    wlclient_input_device* idev = data;
+    idev->keyboard_target_surface = surface;
+
+    wlclient_window* window = wl_surface_get_user_data(surface);
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    if (surface == wdata->surface && wdata->keyboard_focus_handler) {
+        wdata->keyboard_focus_handler(window, true);
+    }
 
     WLCLIENT_LOG_TRACE("Keyboard enter: serial=%" PRIu32, serial);
 }
@@ -2286,9 +2489,18 @@ static void keyboard_enter(void* data, struct wl_keyboard* wl_keyboard, u32 seri
 *   surface     - the wl_surface that lost keyboard focus
 */
 static void keyboard_leave(void* data, struct wl_keyboard* wl_keyboard, u32 serial, struct wl_surface* surface) {
-    (void)data;
     (void)wl_keyboard;
-    (void)surface;
+
+    wlclient_input_device* idev = data;
+    wlclient_window* window = wl_surface_get_user_data(surface);
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    if (surface == wdata->surface && wdata->keyboard_focus_handler) {
+        wdata->keyboard_focus_handler(window, false);
+    }
+
+    if (idev->keyboard_target_surface == surface) {
+        idev->keyboard_target_surface = NULL;
+    }
 
     WLCLIENT_LOG_TRACE("Keyboard leave: serial=%" PRIu32, serial);
 }
@@ -2308,12 +2520,35 @@ static void keyboard_leave(void* data, struct wl_keyboard* wl_keyboard, u32 seri
 *   state       - wl_keyboard_key_state value for press or release
 */
 static void keyboard_key(void* data, struct wl_keyboard* wl_keyboard, u32 serial, u32 time, u32 key, u32 state) {
-    (void)data;
     (void)wl_keyboard;
 
+    wlclient_input_device* idev = data;
+    u32 keysym = 0;
+    u32 modifiers = keyboard_translate_modifiers(idev);
+
+    if (idev->xkb_state) {
+        keysym = xkb_state_key_get_one_sym(idev->xkb_state, key + 8);
+    }
+
+    if (idev->keyboard_target_surface) {
+        wlclient_window* window = wl_surface_get_user_data(idev->keyboard_target_surface);
+        wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+        if (idev->keyboard_target_surface == wdata->surface) {
+            const bool is_pressed = state == WL_KEYBOARD_KEY_STATE_PRESSED;
+
+            if (wdata->keyboard_key_handler) {
+                wdata->keyboard_key_handler(window, key, keysym, is_pressed, modifiers);
+            }
+
+            if (is_pressed) {
+                keyboard_dispatch_text(idev, wdata, window, key, keysym);
+            }
+        }
+    }
+
     WLCLIENT_LOG_TRACE(
-        "Keyboard key: serial=%" PRIu32 ", time=%" PRIu32 ", key=%" PRIu32 ", state=%" PRIu32,
-        serial, time, key, state
+        "Keyboard key: serial=%" PRIu32 ", time=%" PRIu32 ", keycode=%" PRIu32 ", keysym=%" PRIu32 ", state=%" PRIu32 ", modifiers=%" PRIu32,
+        serial, time, key, keysym, state, modifiers
     );
 }
 
@@ -2333,12 +2568,26 @@ static void keyboard_key(void* data, struct wl_keyboard* wl_keyboard, u32 serial
 *   group          - active keyboard layout group
 */
 static void keyboard_modifiers(void* data, struct wl_keyboard* wl_keyboard, u32 serial, u32 mods_depressed, u32 mods_latched, u32 mods_locked, u32 group) {
-    (void)data;
     (void)wl_keyboard;
 
+    wlclient_input_device* idev = data;
+    u32 modifiers = 0;
+    if (idev->xkb_state) {
+        xkb_state_update_mask(idev->xkb_state, mods_depressed, mods_latched, mods_locked, 0, 0, group);
+        modifiers = keyboard_translate_modifiers(idev);
+    }
+
+    if (idev->keyboard_target_surface) {
+        wlclient_window* window = wl_surface_get_user_data(idev->keyboard_target_surface);
+        wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+        if (idev->keyboard_target_surface == wdata->surface && wdata->keyboard_modifiers_handler) {
+            wdata->keyboard_modifiers_handler(window, modifiers);
+        }
+    }
+
     WLCLIENT_LOG_TRACE(
-        "Keyboard modifiers: serial=%" PRIu32 ", depressed=%" PRIu32 ", latched=%" PRIu32 ", locked=%" PRIu32 ", group=%" PRIu32,
-        serial, mods_depressed, mods_latched, mods_locked, group
+        "Keyboard modifiers: serial=%" PRIu32 ", raw_depressed=%" PRIu32 ", raw_latched=%" PRIu32 ", raw_locked=%" PRIu32 ", group=%" PRIu32 ", wlclient_modifiers=%" PRIu32,
+        serial, mods_depressed, mods_latched, mods_locked, group, modifiers
     );
 }
 
@@ -2356,8 +2605,16 @@ static void keyboard_modifiers(void* data, struct wl_keyboard* wl_keyboard, u32 
 *   delay       - repeat delay in milliseconds
 */
 static void keyboard_repeat_info(void* data, struct wl_keyboard* wl_keyboard, i32 rate, i32 delay) {
-    (void)data;
     (void)wl_keyboard;
+
+    wlclient_input_device* idev = data;
+    if (idev->keyboard_target_surface) {
+        wlclient_window* window = wl_surface_get_user_data(idev->keyboard_target_surface);
+        wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+        if (idev->keyboard_target_surface == wdata->surface && wdata->keyboard_repeat_info_handler) {
+            wdata->keyboard_repeat_info_handler(window, rate, delay);
+        }
+    }
 
     WLCLIENT_LOG_TRACE("Keyboard repeat info: rate=%" PRIi32 ", delay=%" PRIi32, rate, delay);
 }

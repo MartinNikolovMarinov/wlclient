@@ -25,10 +25,6 @@ Maybe I should have a "Window demage and refresh" to notify the user when a wind
 
 "Set cursor position" might be a function I want.
 
-# Keyboard Input events left
-
-TODO: None are implemented.
-
 # Valgrind errors
 
 There are quite a lot of Valgrind errors during execution. Investigate what is going on. Write a suppression for the problems that come from drivers.

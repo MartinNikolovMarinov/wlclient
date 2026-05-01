@@ -2,10 +2,14 @@
 #include <EGL/eglext.h>
 #include <GL/gl.h>
 
+#include <inttypes.h>
 #include <signal.h>
 #include <stdio.h>
 #include <unistd.h>
 
+#include <xkbcommon/xkbcommon-keysyms.h>
+
+#include "compiler.h"
 #include "debug.h"
 #include "types.h"
 #include "wl-client.h"
@@ -18,45 +22,93 @@ static void sigint_handler(int sig) {
     g_running = 0;
 }
 
+PRAGMA_WARNING_PUSH
+PRAGMA_WARNING_SUPPRESS_ALL
+
 void handle_close(wlclient_window* window) {
-    printf("USER SPACE: Received close signal for window (id=%d)\n", window->id);
+    // printf("USER SPACE: Received close signal for window (id=%d)\n", window->id);
     g_running = 0;
 }
 
 void handle_size_change(wlclient_window* window, u32 width, u32 height) {
-    printf("USER SPACE: Size change for window (id=%d) to width=%d and height=%d \n", window->id, width, height);
+    // printf("USER SPACE: Size change for window (id=%d) to width=%d and height=%d \n", window->id, width, height);
 }
 
 void handle_framebuffer_size_change(wlclient_window* window, u32 width, u32 height) {
-    printf("USER SPACE: Framebuffer size change for window (id=%d) to width=%d and height=%d \n", window->id, width, height);
+    // printf("USER SPACE: Framebuffer size change for window (id=%d) to width=%d and height=%d \n", window->id, width, height);
     glViewport(0, 0, (i32)width, (i32)height);
 }
 
 void handle_scale_factor_change(wlclient_window* window, f32 factor) {
-    printf("USER SPACE: Scale factor change for window (id=%d) to factor=%f \n", window->id, (f64)factor);
+    // printf("USER SPACE: Scale factor change for window (id=%d) to factor=%f \n", window->id, (f64)factor);
 }
 
-void handle_input_focus(struct wlclient_window* window, bool has_input_focus) {
-    printf("USER SPACE: Input focus for window (id=%d) focused=%s\n", window->id, has_input_focus ? "true" : "false");
+void handle_mouse_focus(struct wlclient_window* window, bool has_mouse_focus) {
+    printf("USER SPACE: Mouse focus for window (id=%d) focused=%s\n", window->id, has_mouse_focus ? "true" : "false");
 }
 
 void handle_mouse_move(struct wlclient_window* window, f64 x, f64 y) {
-    printf("USER SPACE: Mouse move for window (id=%d) x=%f, y=%f \n", window->id, x, y);
+    // printf("USER SPACE: Mouse move for window (id=%d) x=%f, y=%f \n", window->id, x, y);
 }
 
 void handle_mouse_press_handler(struct wlclient_window* window, u32 button, bool is_pressed, f64 x, f64 y) {
+    // printf(
+    //     "USER SPACE: Mouse press for window (id=%d) button=%d pressed=%s x=%f, y=%f\n",
+    //     window->id, button, is_pressed ? "true" : "false", x, y
+    // );
+}
+
+void handle_keyboard_focus(struct wlclient_window* window, bool has_keyboard_focus) {
     printf(
-        "USER SPACE: Mouse press for window (id=%d) button=%d pressed=%s x=%f, y=%f\n",
-        window->id, button, is_pressed ? "true" : "false", x, y
+        "USER SPACE: Keyboard focus for window (id=%d) focused=%s\n",
+        window->id, has_keyboard_focus ? "true" : "false"
     );
 }
+
+void handle_keyboard_key(struct wlclient_window* window, u32 keycode, u32 keysym, bool is_pressed, u32 modifiers) {
+    printf(
+        "USER SPACE: Keyboard key for window (id=%d) keycode=%u keysym=%u pressed=%s modifiers=%u\n",
+        window->id, keycode, keysym, is_pressed ? "true" : "false", modifiers
+    );
+
+    if (keysym == XKB_KEY_Escape) {
+        g_running = 0;
+    }
+}
+
+void handle_keyboard_text(struct wlclient_window* window, const char* utf8, usize len) {
+    printf("USER SPACE: Keyboard text for window (id=%d) len=%"PRIu64" utf8=\"%.*s\"\n", window->id, len, (i32)len, utf8);
+}
+
+void handle_keyboard_modifiers(struct wlclient_window* window, u32 modifiers) {
+    printf(
+        "USER SPACE: Keyboard modifiers for window (id=%d) flags=%u shift=%s ctrl=%s alt=%s super=%s caps=%s num=%s\n",
+        window->id,
+        modifiers,
+        WLCLIENT_MOD_HAS(modifiers, WLCLIENT_MOD_SHIFT) ? "true" : "false",
+        WLCLIENT_MOD_HAS(modifiers, WLCLIENT_MOD_CONTROL) ? "true" : "false",
+        WLCLIENT_MOD_HAS(modifiers, WLCLIENT_MOD_ALT) ? "true" : "false",
+        WLCLIENT_MOD_HAS(modifiers, WLCLIENT_MOD_SUPER) ? "true" : "false",
+        WLCLIENT_MOD_HAS(modifiers, WLCLIENT_MOD_CAPS_LOCK) ? "true" : "false",
+        WLCLIENT_MOD_HAS(modifiers, WLCLIENT_MOD_NUM_LOCK) ? "true" : "false"
+    );
+}
+
+void handle_keyboard_repeat_info(struct wlclient_window* window, i32 rate, i32 delay) {
+    printf(
+        "USER SPACE: Keyboard repeat info for window (id=%d) rate=%d delay=%d\n",
+        window->id, rate, delay
+    );
+}
+
+PRAGMA_WARNING_POP
 
 i32 main(void) {
     signal(SIGINT, sigint_handler);
 
     wlclient_error_code result_code = 0;
 
-    wlclient_log_set_level(WLCLIENT_LOG_LEVEL_TRACE);
+    wlclient_log_set_level(WLCLIENT_LOG_LEVEL_INFO);
     result_code = wlclient_init(NULL);
     if (result_code != WLCLIENT_ERROR_OK) {
         printf("ERROR - %d\n", result_code);
@@ -84,9 +136,16 @@ i32 main(void) {
         wlclient_set_size_change_handler(&window, handle_size_change);
         wlclient_set_framebuffer_change_handler(&window, handle_framebuffer_size_change);
         wlclient_set_scale_factor_change_handler(&window, handle_scale_factor_change);
-        wlclient_set_input_focus_handler(&window, handle_input_focus);
+
+        wlclient_set_mouse_focus_handler(&window, handle_mouse_focus);
         wlclient_set_mouse_move_handler(&window, handle_mouse_move);
-        wlclient_set_handle_mouse_press_handler(&window, handle_mouse_press_handler);
+        wlclient_set_mouse_press_handler(&window, handle_mouse_press_handler);
+
+        wlclient_set_keyboard_focus_handler(&window, handle_keyboard_focus);
+        wlclient_set_keyboard_key_handler(&window, handle_keyboard_key);
+        wlclient_set_keyboard_text_handler(&window, handle_keyboard_text);
+        wlclient_set_keyboard_modifiers_handler(&window, handle_keyboard_modifiers);
+        wlclient_set_keyboard_repeat_info_handler(&window, handle_keyboard_repeat_info);
     }
 
     // Configure EGL

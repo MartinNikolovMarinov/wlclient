@@ -31,6 +31,7 @@ I refuse to believe that this is the only way to perform basic tasks such as ope
 - **Client-side decorations**: title bar subsurface + four edge subsurfaces, rendered via `wl_shm`.
 - **Interactive resize** via `xdg_toplevel_resize` dispatched from edge surfaces, with corner detection on the top/bottom edges.
 - Pointer input: enter/leave, motion, button, frame-batched dispatch — a `wl_pointer.frame` acts as the single dispatch barrier so motion + button in the same frame see a consistent coordinate snapshot.
+- Keyboard input: focus, raw Wayland keycodes, XKB keysyms, stable modifier flags, repeat info, UTF-8 text, and compose/dead-key handling.
 - Pluggable allocator (`wlclient_allocator`) for embedded / custom-heap use.
 
 **Basic decoration rendering, drag and resize features**
@@ -43,7 +44,7 @@ Features that are next in the development pipeline:
 
 | High Priority Feature                        | Status      | Notes       |
 | -------------------------------------------- | ----------- | ----------- |
-| Keyboard input                               | In Progress |             |
+| Keyboard input                               | Done        | Raw keycodes, XKB keysyms, stable modifier flags, repeat info, focus, UTF-8 text, and compose/dead-key handling. Key repeat generation is left to user code. |
 | Pointer axis (scroll)                        | In Progress |             |
 | Window minimize                              | In Progress |             |
 | Window maximize / fullscreen                 | In Progress |             |
@@ -98,7 +99,7 @@ cmake --build build -j
 ./build/sandbox
 ```
 
-Runtime dependencies: `libwayland-client`, `libwayland-egl`, `libwayland-cursor`, EGL, OpenGL.
+Runtime dependencies: `libwayland-client`, `libxkbcommon`, `libwayland-egl`, `libwayland-cursor`, EGL, OpenGL.
 
 ## Design differences from GLFW and SDL
 
