@@ -76,6 +76,19 @@ void assert_window_state_initialized(
     TEST_ASSERT_TRUE(wdata->window_logical_height <= wdata->window_max_logical_height);
     TEST_ASSERT_TRUE(wdata->content_logical_width  <= wdata->window_logical_width);
     TEST_ASSERT_TRUE(wdata->content_logical_height <= wdata->window_logical_height);
+
+    TEST_ASSERT_NULL(wdata->close_handler);
+    TEST_ASSERT_NULL(wdata->size_change_handler);
+    TEST_ASSERT_NULL(wdata->framebuffer_change_handler);
+    TEST_ASSERT_NULL(wdata->scale_factor_change_handler);
+    TEST_ASSERT_NULL(wdata->mouse_focus_handler);
+    TEST_ASSERT_NULL(wdata->mouse_move_handler);
+    TEST_ASSERT_NULL(wdata->mouse_press_handler);
+    TEST_ASSERT_NULL(wdata->keyboard_focus_handler);
+    TEST_ASSERT_NULL(wdata->keyboard_key_handler);
+    TEST_ASSERT_NULL(wdata->keyboard_text_handler);
+    TEST_ASSERT_NULL(wdata->keyboard_modifiers_handler);
+    TEST_ASSERT_NULL(wdata->keyboard_repeat_info_handler);
 }
 
 void assert_global_state_initialized() {
@@ -106,6 +119,12 @@ void assert_global_state_initialized() {
         TEST_ASSERT_NOT_NULL(s->input_devices[i].seat);
         TEST_ASSERT_NOT_NULL(s->input_devices[i].seat_name);
         TEST_ASSERT_TRUE(s->input_devices[i].seat_version > 0);
+        TEST_ASSERT_NULL(s->input_devices[i].keyboard_target_surface);
+        TEST_ASSERT_NULL(s->input_devices[i].xkb_context);
+        TEST_ASSERT_NULL(s->input_devices[i].xkb_keymap);
+        TEST_ASSERT_NULL(s->input_devices[i].xkb_state);
+        TEST_ASSERT_NULL(s->input_devices[i].xkb_compose_table);
+        TEST_ASSERT_NULL(s->input_devices[i].xkb_compose_state);
         // TEST_ASSERT_NOT_NULL(s->input_devices[i].pointer);
         // TEST_ASSERT_NOT_NULL(s->input_devices[i].keyboard);
     }
