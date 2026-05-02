@@ -18,7 +18,8 @@ WLCLIENT_API_EXPORT wlclient_error_code wlclient_create_window(
 );
 WLCLIENT_API_EXPORT void wlclient_destroy_window(wlclient_window* window);
 WLCLIENT_API_EXPORT void wlclient_get_framebuffer(wlclient_window* window, u32* w, u32* h);
-WLCLIENT_API_EXPORT wlclient_error_code wlclient_toggle_window_decor(wlclient_window* window);
+WLCLIENT_API_EXPORT wlclient_error_code wlclient_hide_decor(wlclient_window* window);
+WLCLIENT_API_EXPORT wlclient_error_code wlclient_show_decor(wlclient_window* window);
 
 WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns);
 
@@ -26,9 +27,11 @@ WLCLIENT_API_EXPORT void wlclient_set_close_handler(wlclient_window* window, wlc
 WLCLIENT_API_EXPORT void wlclient_set_size_change_handler(wlclient_window* window, wlclient_size_change_handler handler);
 WLCLIENT_API_EXPORT void wlclient_set_framebuffer_change_handler(wlclient_window* window, wlclient_framebuffer_change_handler handler);
 WLCLIENT_API_EXPORT void wlclient_set_scale_factor_change_handler(wlclient_window* window, wlclient_scale_factor_change_handler handler);
+
 WLCLIENT_API_EXPORT void wlclient_set_mouse_focus_handler(wlclient_window* window, wlclient_mouse_focus_handler handler);
 WLCLIENT_API_EXPORT void wlclient_set_mouse_move_handler(wlclient_window* window, wlclient_mouse_move_handler handler);
 WLCLIENT_API_EXPORT void wlclient_set_mouse_press_handler(wlclient_window* window, wlclient_mouse_press_handler handler);
+
 WLCLIENT_API_EXPORT void wlclient_set_keyboard_focus_handler(wlclient_window* window, wlclient_keyboard_focus_handler handler);
 WLCLIENT_API_EXPORT void wlclient_set_keyboard_key_handler(wlclient_window* window, wlclient_keyboard_key_handler handler);
 WLCLIENT_API_EXPORT void wlclient_set_keyboard_text_handler(wlclient_window* window, wlclient_keyboard_text_handler handler);

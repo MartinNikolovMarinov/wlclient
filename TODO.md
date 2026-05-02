@@ -1,9 +1,6 @@
 # Window events left
 
-0. Window visibility (on/off)
-1. Window minimize
-2. Window maximize (is fullscreen different?)
-3. Window width and height limits
+1. Allow window to start in fullscreen.
 
 Maybe I should have a "Window demage and refresh" to notify the user when a window has been demaged. That might trigger IO components redraw, or something like that.
 

@@ -206,8 +206,15 @@ wlclient_error_code wlclient_egl_swap_buffers(const wlclient_window* window) {
     WLCLIENT_ASSERT(egl_wdata->used, "EGL Window is marked as unused.");
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
 
+    if (wdata->is_suspended) {
+        WLCLIENT_LOG_INFO("Skipping swap buffer - window(id=%d) is suspended", window->id);
+        return WLCLIENT_ERROR_OK;
+    }
+
     if (g_swap_interval > 0) {
-        ENSURE_OR_GOTO_ERR(egl_wait_for_frame(egl_wdata));
+        if(!egl_wait_for_frame(egl_wdata)) {
+            return WLCLIENT_ERROR_OK;
+        }
         ENSURE_OR_GOTO_ERR(egl_request_next_frame(egl_wdata, wdata));
     }
 

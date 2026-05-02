@@ -44,7 +44,7 @@ void handle_scale_factor_change(wlclient_window* window, f32 factor) {
 }
 
 void handle_mouse_focus(struct wlclient_window* window, bool has_mouse_focus) {
-    printf("USER SPACE: Mouse focus for window (id=%d) focused=%s\n", window->id, has_mouse_focus ? "true" : "false");
+    // printf("USER SPACE: Mouse focus for window (id=%d) focused=%s\n", window->id, has_mouse_focus ? "true" : "false");
 }
 
 void handle_mouse_move(struct wlclient_window* window, f64 x, f64 y) {
@@ -59,17 +59,17 @@ void handle_mouse_press_handler(struct wlclient_window* window, u32 button, bool
 }
 
 void handle_keyboard_focus(struct wlclient_window* window, bool has_keyboard_focus) {
-    printf(
-        "USER SPACE: Keyboard focus for window (id=%d) focused=%s\n",
-        window->id, has_keyboard_focus ? "true" : "false"
-    );
+    // printf(
+    //     "USER SPACE: Keyboard focus for window (id=%d) focused=%s\n",
+    //     window->id, has_keyboard_focus ? "true" : "false"
+    // );
 }
 
 void handle_keyboard_key(struct wlclient_window* window, u32 keycode, u32 keysym, bool is_pressed, u32 modifiers) {
-    printf(
-        "USER SPACE: Keyboard key for window (id=%d) keycode=%u keysym=%u pressed=%s modifiers=%u\n",
-        window->id, keycode, keysym, is_pressed ? "true" : "false", modifiers
-    );
+    // printf(
+    //     "USER SPACE: Keyboard key for window (id=%d) keycode=%u keysym=%u pressed=%s modifiers=%u\n",
+    //     window->id, keycode, keysym, is_pressed ? "true" : "false", modifiers
+    // );
 
     if (keysym == XKB_KEY_Escape) {
         g_running = 0;
@@ -77,28 +77,28 @@ void handle_keyboard_key(struct wlclient_window* window, u32 keycode, u32 keysym
 }
 
 void handle_keyboard_text(struct wlclient_window* window, const char* utf8, usize len) {
-    printf("USER SPACE: Keyboard text for window (id=%d) len=%"PRIu64" utf8=\"%.*s\"\n", window->id, len, (i32)len, utf8);
+    // printf("USER SPACE: Keyboard text for window (id=%d) len=%"PRIu64" utf8=\"%.*s\"\n", window->id, len, (i32)len, utf8);
 }
 
 void handle_keyboard_modifiers(struct wlclient_window* window, u32 modifiers) {
-    printf(
-        "USER SPACE: Keyboard modifiers for window (id=%d) flags=%u shift=%s ctrl=%s alt=%s super=%s caps=%s num=%s\n",
-        window->id,
-        modifiers,
-        WLCLIENT_MOD_HAS(modifiers, WLCLIENT_MOD_SHIFT) ? "true" : "false",
-        WLCLIENT_MOD_HAS(modifiers, WLCLIENT_MOD_CONTROL) ? "true" : "false",
-        WLCLIENT_MOD_HAS(modifiers, WLCLIENT_MOD_ALT) ? "true" : "false",
-        WLCLIENT_MOD_HAS(modifiers, WLCLIENT_MOD_SUPER) ? "true" : "false",
-        WLCLIENT_MOD_HAS(modifiers, WLCLIENT_MOD_CAPS_LOCK) ? "true" : "false",
-        WLCLIENT_MOD_HAS(modifiers, WLCLIENT_MOD_NUM_LOCK) ? "true" : "false"
-    );
+    // printf(
+    //     "USER SPACE: Keyboard modifiers for window (id=%d) flags=%u shift=%s ctrl=%s alt=%s super=%s caps=%s num=%s\n",
+    //     window->id,
+    //     modifiers,
+    //     WLCLIENT_MOD_HAS(modifiers, WLCLIENT_MOD_SHIFT) ? "true" : "false",
+    //     WLCLIENT_MOD_HAS(modifiers, WLCLIENT_MOD_CONTROL) ? "true" : "false",
+    //     WLCLIENT_MOD_HAS(modifiers, WLCLIENT_MOD_ALT) ? "true" : "false",
+    //     WLCLIENT_MOD_HAS(modifiers, WLCLIENT_MOD_SUPER) ? "true" : "false",
+    //     WLCLIENT_MOD_HAS(modifiers, WLCLIENT_MOD_CAPS_LOCK) ? "true" : "false",
+    //     WLCLIENT_MOD_HAS(modifiers, WLCLIENT_MOD_NUM_LOCK) ? "true" : "false"
+    // );
 }
 
 void handle_keyboard_repeat_info(struct wlclient_window* window, i32 rate, i32 delay) {
-    printf(
-        "USER SPACE: Keyboard repeat info for window (id=%d) rate=%d delay=%d\n",
-        window->id, rate, delay
-    );
+    // printf(
+    //     "USER SPACE: Keyboard repeat info for window (id=%d) rate=%d delay=%d\n",
+    //     window->id, rate, delay
+    // );
 }
 
 PRAGMA_WARNING_POP
@@ -108,7 +108,7 @@ i32 main(void) {
 
     wlclient_error_code result_code = 0;
 
-    wlclient_log_set_level(WLCLIENT_LOG_LEVEL_INFO);
+    wlclient_log_set_level(WLCLIENT_LOG_LEVEL_DEBUG);
     result_code = wlclient_init(NULL);
     if (result_code != WLCLIENT_ERROR_OK) {
         printf("ERROR - %d\n", result_code);

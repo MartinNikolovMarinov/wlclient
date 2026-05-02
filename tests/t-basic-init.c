@@ -31,8 +31,6 @@ void assert_window_state_initialized(
     // Make sure packet data was cleared after configure
     TEST_ASSERT_TRUE(wdata->toplevel_config_in_flight_packet.window_logical_width == 0);
     TEST_ASSERT_TRUE(wdata->toplevel_config_in_flight_packet.window_logical_height == 0);
-    TEST_ASSERT_TRUE(wdata->toplevel_config_in_flight_packet.window_max_logical_width == 0);
-    TEST_ASSERT_TRUE(wdata->toplevel_config_in_flight_packet.window_max_logical_height == 0);
 
     const u32 expected_edge  = (decor_cfg && decor_cfg->edge_logical_thickness > 0) ? decor_cfg->edge_logical_thickness : 0;
     const u32 expected_decor = (decor_cfg && decor_cfg->decor_logical_height > 0)  ? decor_cfg->decor_logical_height  : 0;
@@ -68,12 +66,6 @@ void assert_window_state_initialized(
     TEST_ASSERT_EQUAL_UINT32(wdata->content_logical_width, wdata->framebuffer_pixel_width);
     TEST_ASSERT_EQUAL_UINT32(wdata->content_logical_height, wdata->framebuffer_pixel_height);
 
-    // Max bounds are environment-dependent (configure_bounds is optional), so only
-    // check invariants: window fits inside max, content fits inside window.
-    TEST_ASSERT_TRUE(wdata->window_max_logical_width > 0);
-    TEST_ASSERT_TRUE(wdata->window_max_logical_height > 0);
-    TEST_ASSERT_TRUE(wdata->window_logical_width  <= wdata->window_max_logical_width);
-    TEST_ASSERT_TRUE(wdata->window_logical_height <= wdata->window_max_logical_height);
     TEST_ASSERT_TRUE(wdata->content_logical_width  <= wdata->window_logical_width);
     TEST_ASSERT_TRUE(wdata->content_logical_height <= wdata->window_logical_height);
 

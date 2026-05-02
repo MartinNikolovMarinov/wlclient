@@ -73,6 +73,7 @@ static void remove_and_destroy_input_device_by_id(i32 idx);
 static void destroy_window_data(wlclient_window_data* wdata);
 static void log_window_data_dimensions(wlclient_window_data* wdata, wlclient_log_level level, const char* function_name);
 static void apply_window_geometry(wlclient_window_data* wdata);
+static void notify_window_resize(wlclient_window* window, wlclient_window_data* wdata);
 
 static u32 content_to_window_width(const wlclient_window_data* wdata, u32 content_width);
 static u32 content_to_window_height(const wlclient_window_data* wdata, u32 content_height);
@@ -88,6 +89,8 @@ static void surface_node_create_buffers(wlclient_surface_node* node, u32 pixel_w
 static void surface_node_change_pool_size(wlclient_surface_node* node, u32 pixel_width, u32 pixel_height);
 static void surface_node_set_non_transperant_region(wlclient_surface_node* node, u32 pixel_width, u32 pixel_height);
 static void surface_node_render(wlclient_surface_node* node, wlclient_color color);
+
+static bool decor_is_visible(wlclient_window_data* wdata);
 
 static void decor_update_position(wlclient_window_data* wdata);
 static void decor_handle_resize(wlclient_window_data* wdata);
@@ -320,9 +323,6 @@ wlclient_error_code wlclient_create_window(
         wdata->window_logical_width = content_to_window_width(wdata, wdata->content_logical_width);
         wdata->window_logical_height = content_to_window_height(wdata, wdata->content_logical_height);
 
-        wdata->window_max_logical_width = WLCLIENT_MAX_WINDOW_WIDTH;
-        wdata->window_max_logical_height = WLCLIENT_MAX_WINDOW_HEIGHT;
-
         wdata->framebuffer_pixel_width = (u32)wdata->scale_factor * wdata->content_logical_width;
         wdata->framebuffer_pixel_height = (u32)wdata->scale_factor * wdata->content_logical_height;
 
@@ -375,14 +375,14 @@ wlclient_error_code wlclient_create_window(
         const static struct xdg_toplevel_listener toplevel_listener = {
             .close = xdg_toplevel_close,
             .configure = xdg_toplevel_configure, // sets the in flight window logical width and height
-            .configure_bounds = xdg_toplevel_configure_bounds, // sets the in flight window max logical width and height
+            .configure_bounds = xdg_toplevel_configure_bounds,
             .wm_capabilities = xdg_toplevel_configure_wm_capabilities,
         };
         ret = xdg_toplevel_add_listener(wdata->xdg_toplevel, &toplevel_listener, window);
         ENSURE_OR_GOTO_ERR(ret == 0);
     }
 
-    if (!wdata->csd_hidden) {
+    if (wdata->decor_logical_height > 0) {
         // Create the decoration child surface and subsurface after the parent has its toplevel role.
         {
             wdata->decor_node.child_surface = wl_compositor_create_surface(g_state.compositor);
@@ -428,8 +428,6 @@ wlclient_error_code wlclient_create_window(
     ENSURE_OR_GOTO_ERR(wdata->scale_factor > 0);
     ENSURE_OR_GOTO_ERR(wdata->window_logical_width > 0);
     ENSURE_OR_GOTO_ERR(wdata->window_logical_height > 0);
-    ENSURE_OR_GOTO_ERR(wdata->window_max_logical_width > 0);
-    ENSURE_OR_GOTO_ERR(wdata->window_max_logical_height > 0);
     ENSURE_OR_GOTO_ERR(wdata->content_logical_width > 0);
     ENSURE_OR_GOTO_ERR(wdata->content_logical_height > 0);
     ENSURE_OR_GOTO_ERR(wdata->framebuffer_pixel_width > 0);
@@ -469,55 +467,62 @@ void wlclient_get_framebuffer(wlclient_window* window, u32* w, u32* h) {
     *h = wdata->framebuffer_pixel_height;
 }
 
-wlclient_error_code wlclient_toggle_window_decor(wlclient_window* window) {
+wlclient_error_code wlclient_hide_decor(wlclient_window* window) {
     if (!window || window->id < 0) return WLCLIENT_ERROR_WINDOW_TOGGLE_DECOR_FAILED;
 
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
     WLCLIENT_ASSERT(wdata->used, "Attempt to toggle window that is unused");
 
     if (wdata->decor_logical_height == 0 || wdata->edge_logical_thickness == 0) {
-        WLCLIENT_LOG_WARN("Can't toggle window because its decorations are not configured");
+        // Decoration not configured
+        return WLCLIENT_ERROR_OK;
+    }
+    if (wdata->csd_hidden) {
+        return WLCLIENT_ERROR_OK;
+    }
+
+    WLCLIENT_LOG_DEBUG("Hide window(id=%" PRIi32") client side decorations", window->id);
+
+    wdata->csd_hidden = true;
+    wdata->content_logical_width = wdata->window_logical_width;
+    wdata->content_logical_height = wdata->window_logical_height;
+    wdata->framebuffer_pixel_width = (u32)wdata->scale_factor * wdata->content_logical_width;
+    wdata->framebuffer_pixel_height = (u32)wdata->scale_factor * wdata->content_logical_height;
+    apply_window_geometry(wdata);
+    decor_hide(wdata);
+    edges_hide(wdata);
+
+    notify_window_resize(window, wdata);
+
+    return WLCLIENT_ERROR_OK;
+}
+
+wlclient_error_code wlclient_show_decor(wlclient_window* window) {
+    if (!window || window->id < 0) return WLCLIENT_ERROR_WINDOW_TOGGLE_DECOR_FAILED;
+
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+    WLCLIENT_ASSERT(wdata->used, "Attempt to toggle window that is unused");
+
+    if (wdata->decor_logical_height == 0 || wdata->edge_logical_thickness == 0) {
+        WLCLIENT_LOG_WARN("Can't show decoration because it isn't configured");
         return WLCLIENT_ERROR_WINDOW_TOGGLE_DECOR_FAILED;
     }
-
-    wdata->csd_hidden = !wdata->csd_hidden;
-
-    WLCLIENT_LOG_DEBUG("Toggle window(id=%" PRIi32") to client_side_decorations_state=%s",
-        window->id,
-        wdata->csd_hidden ? "hidden" : "visible"
-    );
-
-    if (wdata->csd_hidden) {
-        wdata->content_logical_width = wdata->window_logical_width;
-        wdata->content_logical_height = wdata->window_logical_height;
-        wdata->framebuffer_pixel_width = (u32)wdata->scale_factor * wdata->content_logical_width;
-        wdata->framebuffer_pixel_height = (u32)wdata->scale_factor * wdata->content_logical_height;
-        apply_window_geometry(wdata);
-        decor_hide(wdata);
-        edges_hide(wdata);
-    }
-    else {
-        wdata->content_logical_width = window_to_content_width(wdata, wdata->content_logical_width);
-        wdata->content_logical_height = window_to_content_height(wdata, wdata->content_logical_height);
-        wdata->framebuffer_pixel_width = (u32)wdata->scale_factor * wdata->content_logical_width;
-        wdata->framebuffer_pixel_height = (u32)wdata->scale_factor * wdata->content_logical_height;
-        apply_window_geometry(wdata);
-        decor_render(wdata);
-        edges_render(wdata);
+    if (!wdata->csd_hidden) {
+        return WLCLIENT_ERROR_OK;
     }
 
-    // Notify backend and user code
-    {
-        if (g_state.backend_resize_framebuffer) {
-            g_state.backend_resize_framebuffer(window, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
-        }
-        if (wdata->framebuffer_change_handler) {
-            wdata->framebuffer_change_handler(window, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
-        }
-        if (wdata->size_change_handler) {
-            wdata->size_change_handler(window, wdata->content_logical_width, wdata->content_logical_height);
-        }
-    }
+    WLCLIENT_LOG_DEBUG("Show window(id=%" PRIi32") client side decorations", window->id);
+
+    wdata->csd_hidden = false;
+    wdata->content_logical_width = window_to_content_width(wdata, wdata->window_logical_width);
+    wdata->content_logical_height = window_to_content_height(wdata, wdata->window_logical_height);
+    wdata->framebuffer_pixel_width = (u32)wdata->scale_factor * wdata->content_logical_width;
+    wdata->framebuffer_pixel_height = (u32)wdata->scale_factor * wdata->content_logical_height;
+    apply_window_geometry(wdata);
+    decor_render(wdata);
+    edges_render(wdata);
+
+    notify_window_resize(window, wdata);
 
     return WLCLIENT_ERROR_OK;
 }
@@ -933,14 +938,14 @@ static void log_window_data_dimensions(wlclient_window_data* wdata, wlclient_log
         "\n --- Window dimensions ---"
         "\n  scale_factor = %.3f,"
         "\n  csd = %s,"
+        "\n  fullscreen = %s,"
         "\n  window_locical_size = %" PRIu32 "x%" PRIu32 ","
-        "\n  window_max_logical_size = %" PRIu32 "x%" PRIu32
         "\n  content_locical_size = %" PRIu32 "x%" PRIu32
         "\n  framebuffer_size = %" PRIu32 "x%" PRIu32,
         (f64) wdata->scale_factor,
         wdata->csd_hidden ? "hidden" : "visible",
+        wdata->is_fullscreen ? "true" : "false",
         wdata->window_logical_width, wdata->window_logical_height,
-        wdata->window_max_logical_width, wdata->window_max_logical_height,
         wdata->content_logical_width, wdata->content_logical_height,
         wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height
     );
@@ -948,19 +953,32 @@ static void log_window_data_dimensions(wlclient_window_data* wdata, wlclient_log
 
 static void apply_window_geometry(wlclient_window_data* wdata) {
     i32 x, y, w, h;
-    if (wdata->csd_hidden) {
-        x = 0;
-        y = 0;
-        w = (i32) wdata->window_logical_width;
-        h = (i32) wdata->window_logical_height;
-    }
-    else {
+    if (decor_is_visible(wdata)) {
         x = -(i32) wdata->edge_logical_thickness;
         y = -(i32) wdata->edge_logical_thickness - (i32) wdata->decor_logical_height;
         w = (i32) wdata->window_logical_width;
         h = (i32) wdata->window_logical_height;
     }
+    else {
+        x = 0;
+        y = 0;
+        w = (i32) wdata->window_logical_width;
+        h = (i32) wdata->window_logical_height;
+    }
     xdg_surface_set_window_geometry(wdata->xdg_surface, x, y, w, h);
+}
+
+// Notify backend and user code
+static void notify_window_resize(wlclient_window* window, wlclient_window_data* wdata) {
+    if (g_state.backend_resize_framebuffer && wdata->used) {
+        g_state.backend_resize_framebuffer(window, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
+    }
+    if (wdata->framebuffer_change_handler) {
+        wdata->framebuffer_change_handler(window, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
+    }
+    if (wdata->size_change_handler) {
+        wdata->size_change_handler(window, wdata->content_logical_width, wdata->content_logical_height);
+    }
 }
 
 static bool display_flush(struct wl_display* display) {
@@ -1178,6 +1196,10 @@ static void surface_node_render(wlclient_surface_node* node,  wlclient_color col
     WLCLIENT_LOG_TRACE("Render surface node done.");
 }
 
+static bool decor_is_visible(wlclient_window_data* wdata) {
+    return !wdata->is_fullscreen && !wdata->csd_hidden;
+}
+
 /**
 * Position the decoration directly above the main content surface.
 */
@@ -1215,7 +1237,7 @@ static void decor_handle_resize(wlclient_window_data* wdata) {
 
 static void decor_render(wlclient_window_data* wdata) {
     decor_handle_resize(wdata);
-    if (!wdata->csd_hidden) {
+    if (decor_is_visible(wdata)) {
         WLCLIENT_LOG_DEBUG("Render decoration...");
         surface_node_render(&wdata->decor_node, wdata->decor_color);
         WLCLIENT_LOG_DEBUG("Render decoration done");
@@ -1311,7 +1333,7 @@ static void edges_handle_resize(wlclient_window_data* wdata) {
 
 static void edges_render(wlclient_window_data* wdata) {
     edges_handle_resize(wdata);
-    if (!wdata->csd_hidden) {
+    if (decor_is_visible(wdata)) {
         WLCLIENT_LOG_DEBUG("Render edges...");
         for (u32 i = 0; i < WLCLIENT_EDGE_COUNT; i++) {
             wlclient_surface_node* edge_node = &wdata->edge_nodes[i];
@@ -1632,6 +1654,27 @@ static void xdg_toplevel_configure(void* data, struct xdg_toplevel* toplevel, i3
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
     wdata->toplevel_config_in_flight_packet.window_logical_width = (u32) width;
     wdata->toplevel_config_in_flight_packet.window_logical_height = (u32) height;
+
+    wlclient_toplevel_state window_state = TOPLEVEL_STATE_NONE;
+    enum xdg_toplevel_state *state;
+    wl_array_for_each(state, states) {
+        switch (*state) {
+            case XDG_TOPLEVEL_STATE_MAXIMIZED: window_state |= TOPLEVEL_STATE_MAXIMIZED; break;
+            case XDG_TOPLEVEL_STATE_FULLSCREEN: window_state |= TOPLEVEL_STATE_FULLSCREEN; break;
+            case XDG_TOPLEVEL_STATE_RESIZING: window_state |= TOPLEVEL_STATE_RESIZING; break;
+
+            case XDG_TOPLEVEL_STATE_ACTIVATED: window_state |= TOPLEVEL_STATE_ACTIVATED; break;
+            case XDG_TOPLEVEL_STATE_SUSPENDED: window_state |= TOPLEVEL_STATE_SUSPENDED; break;
+
+            case XDG_TOPLEVEL_STATE_TILED_LEFT: window_state |= TOPLEVEL_STATE_TILED_LEFT; break;
+            case XDG_TOPLEVEL_STATE_TILED_RIGHT: window_state |= TOPLEVEL_STATE_TILED_RIGHT; break;
+            case XDG_TOPLEVEL_STATE_TILED_TOP: window_state |= TOPLEVEL_STATE_TILED_TOP; break;
+            case XDG_TOPLEVEL_STATE_TILED_BOTTOM: window_state |= TOPLEVEL_STATE_TILED_BOTTOM; break;
+        }
+    }
+
+    WLCLIENT_LOG_DEBUG("Current window state = %d", window_state);
+    wdata->toplevel_config_in_flight_packet.window_state = window_state;
 }
 
 /**
@@ -1647,17 +1690,9 @@ static void xdg_toplevel_configure(void* data, struct xdg_toplevel* toplevel, i3
 *   height    - suggested maximum logical window height, or 0 if unspecified
 */
 static void xdg_toplevel_configure_bounds(void* data, struct xdg_toplevel* toplevel, i32 width, i32 height) {
+    (void)data;
     (void)toplevel;
-
     WLCLIENT_LOG_DEBUG("Top level bounds size = %" PRIi32 "x%" PRIi32, width, height);
-
-    wlclient_window* window = data;
-    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
-    u32 w = (width > 0) ? (u32) width : WLCLIENT_MAX_WINDOW_WIDTH;
-    u32 h = (height > 0) ? (u32) height : WLCLIENT_MAX_WINDOW_HEIGHT;
-
-    wdata->toplevel_config_in_flight_packet.window_max_logical_width = w;
-    wdata->toplevel_config_in_flight_packet.window_max_logical_height = h;
 }
 
 /**
@@ -1703,32 +1738,30 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
     wlclient_window* window = data;
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
 
-    if (wdata->toplevel_config_in_flight_packet.window_max_logical_width > 0) {
-        wdata->window_max_logical_width = wdata->toplevel_config_in_flight_packet.window_max_logical_width;
-    }
-    if (wdata->toplevel_config_in_flight_packet.window_max_logical_height > 0) {
-        wdata->window_max_logical_height = wdata->toplevel_config_in_flight_packet.window_max_logical_height;
-    }
+    wdata->is_fullscreen = wdata->toplevel_config_in_flight_packet.window_state & TOPLEVEL_STATE_FULLSCREEN;
+    wdata->is_suspended = (wdata->toplevel_config_in_flight_packet.window_state & TOPLEVEL_STATE_SUSPENDED) != 0;
 
     if (wdata->toplevel_config_in_flight_packet.window_logical_width > 0) {
         wdata->window_logical_width = WLCLIENT_MIN(
             wdata->toplevel_config_in_flight_packet.window_logical_width,
-            wdata->window_max_logical_width
+            WLCLIENT_MAX_WINDOW_WIDTH
         );
     }
     if (wdata->toplevel_config_in_flight_packet.window_logical_height > 0) {
         wdata->window_logical_height = WLCLIENT_MIN(
             wdata->toplevel_config_in_flight_packet.window_logical_height,
-            wdata->window_max_logical_height
+            WLCLIENT_MAX_WINDOW_HEIGHT
         );
     }
 
-    wdata->content_logical_width = wdata->csd_hidden
-        ? wdata->window_logical_width
-        : window_to_content_width(wdata, wdata->window_logical_width);
-    wdata->content_logical_height = wdata->csd_hidden
-        ? wdata->window_logical_height
-        : window_to_content_height(wdata, wdata->window_logical_height);
+    bool decor_visible = decor_is_visible(wdata);
+
+    wdata->content_logical_width = decor_visible
+        ? window_to_content_width(wdata, wdata->window_logical_width)
+        : wdata->window_logical_width;
+    wdata->content_logical_height = decor_visible
+        ? window_to_content_height(wdata, wdata->window_logical_height)
+        : wdata->window_logical_height;
 
     wdata->framebuffer_pixel_width = (u32)wdata->scale_factor * wdata->content_logical_width;
     wdata->framebuffer_pixel_height = (u32)wdata->scale_factor * wdata->content_logical_height;
@@ -1741,24 +1774,22 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
     // Acknowledge the current configuration handshake with the compositor.
     xdg_surface_ack_configure(xdg_surface, serial);
 
-    decor_render(wdata);
-    edges_render(wdata);
-
-    // Notify backend and user code
-    {
-        if (g_state.backend_resize_framebuffer && wdata->used) {
-            g_state.backend_resize_framebuffer(window, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
-        }
-        if (wdata->framebuffer_change_handler) {
-            wdata->framebuffer_change_handler(window, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
-        }
-        if (wdata->size_change_handler) {
-            wdata->size_change_handler(window, wdata->content_logical_width, wdata->content_logical_height);
-        }
+    if (decor_visible) {
+        decor_render(wdata);
+        edges_render(wdata);
+    }
+    else if (wdata->decor_logical_height > 0) {
+        decor_hide(wdata);
+        edges_hide(wdata);
     }
 
-    // zero out the in-flight packet
-    memset(&wdata->toplevel_config_in_flight_packet, 0, sizeof(wdata->toplevel_config_in_flight_packet));
+    notify_window_resize(window, wdata);
+
+    // zero out the in-flight packet's width and height members.
+    {
+        wdata->toplevel_config_in_flight_packet.window_logical_width = 0;
+        wdata->toplevel_config_in_flight_packet.window_logical_height = 0;
+    }
 }
 
 /**

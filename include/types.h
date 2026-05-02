@@ -129,6 +129,19 @@ typedef enum wlclient_surface_type {
     ST_SENTINEL
 } wlclient_surface_type;
 
+typedef enum wlclient_toplevel_state {
+    TOPLEVEL_STATE_NONE = 0,
+    TOPLEVEL_STATE_MAXIMIZED = 1 << 0,
+    TOPLEVEL_STATE_FULLSCREEN = 1 << 1,
+    TOPLEVEL_STATE_RESIZING = 1 << 2,
+    TOPLEVEL_STATE_ACTIVATED = 1 << 3,
+    TOPLEVEL_STATE_SUSPENDED = 1 << 4,
+    TOPLEVEL_STATE_TILED_LEFT = 1 << 5,
+    TOPLEVEL_STATE_TILED_RIGHT = 1 << 6,
+    TOPLEVEL_STATE_TILED_TOP = 1 << 7,
+    TOPLEVEL_STATE_TILED_BOTTOM = 1 << 8,
+} wlclient_toplevel_state;
+
 typedef struct wlclient_input_device {
     struct {
         u32 pending_flags;
@@ -199,15 +212,13 @@ typedef struct wlclient_window_data {
     // This packet is assembled during configuration changes and it is used in xdg_surface_configure.
     struct {
         u32 window_logical_width, window_logical_height;
-        u32 window_max_logical_width, window_max_logical_height;
+        wlclient_toplevel_state window_state;
     } toplevel_config_in_flight_packet;
 
     // Logical window geometry in surface coordinates, including client-side decorations and edges.
     u32 window_logical_width, window_logical_height;
     // Logical content area, excluding client-side decorations and edges.
     u32 content_logical_width, content_logical_height;
-    // Compositor-suggested maximum logical size.
-    u32 window_max_logical_width, window_max_logical_height;
     // Pixel dimensions of the render target (content logical size * buffer_scale). Excludes decorations and edges.
     u32 framebuffer_pixel_width, framebuffer_pixel_height;
     // Scale factor reported by the compositor. May be fractional.
@@ -221,6 +232,10 @@ typedef struct wlclient_window_data {
     // XDG toplevel role — makes the surface a desktop window with title, close, resize, etc.
     struct xdg_toplevel* xdg_toplevel;
 
+    // The window not visible on the screen and the compositor will not be painting it.
+    bool is_suspended;
+    // The window state is fullscreen.
+    bool is_fullscreen;
     // Should the frame around the content be visible.
     bool csd_hidden;
 
