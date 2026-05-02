@@ -26,6 +26,7 @@
 
 // TODO: [FRACTIONAL_SCALING] Every calculation that uses scaling will have to change when fractional scaling is introduced.
 // TODO: [ALPHA_BLENDING] The decoration alpha blending is broken, or possibly not configured; needs investigation.
+// TODO: [VALGRIND] Valgrind is showing a lot of errors, asside from the expected NVIDIA driver errors, which need investigation.
 
 #define ENSURE_OR_GOTO_ERR(expr)                                                    \
 do {                                                                                \

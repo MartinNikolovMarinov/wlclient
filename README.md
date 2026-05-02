@@ -44,14 +44,16 @@ Features that are next in the development pipeline:
 
 | High Priority Feature                        | Status      | Notes       |
 | -------------------------------------------- | ----------- | ----------- |
-| Keyboard input                               | Done        | Raw keycodes, XKB keysyms, stable modifier flags, repeat info, focus, UTF-8 text, and compose/dead-key handling. Key repeat generation is left to user code. |
-| Pointer axis (scroll)                        | In Progress |             |
-| Window minimize                              | In Progress |             |
-| Window maximize / fullscreen                 | In Progress |             |
-| Cursor (setting, animating, size changes)    | Planned     |             |
-| Fractional scaling (`wp-fractional-scale`)   | Planned     |             |
-| Clipboard                                    | Planning    |             |
+| Keyboard input                               | Done        |             |
+| Window fullscreen                            | Done        |             |
 | Window visibility (`SUSPENDED` state)        | Done        |             |
+| Pointer axis (scroll)                        | In Progress |             |
+| Window minimize/iconify                      | In Progress |             |
+| Window maximize                              | In Progress |             |
+| Fractional scaling (`wp-fractional-scale`)   | Planned     |             |
+| Cursor (setting, animating, size changes)    | Planned     |             |
+| Allow window to start in fullscreen          | Planned     |             |
+| Clipboard                                    | Planning    |             |
 | Image loading (`stb_image`)                  | Planning    | Likely needed for loading custom cursor icons |
 | Decoration opacity / alpha blending          | Planning    | Currently broken |
 
@@ -68,6 +70,7 @@ Features that depend on the above being finished:
 | Font rendering (`stb_truetype`)              | Nice to have   | Likely needed if window decorations are to render a title |
 | Joystick support                             | Nice to have   | |
 | Touch support                                | Nice to have   | |
+| Performance measurements                     | Nice to have   | |
 
 Plans for backend support:
 
