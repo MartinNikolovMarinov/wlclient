@@ -75,6 +75,8 @@ typedef void (*wlclient_close_handler)(struct wlclient_window* window);
 typedef void (*wlclient_size_change_handler)(struct wlclient_window* window, u32 width, u32 height);
 typedef void (*wlclient_framebuffer_change_handler)(struct wlclient_window* window, u32 width, u32 height);
 typedef void (*wlclient_scale_factor_change_handler)(struct wlclient_window* window, f32 factor);
+typedef void (*wlclient_suspended_handler)(struct wlclient_window* window, bool is_suspended);
+typedef void (*wlclient_fullscreen_handler)(struct wlclient_window* window, bool is_fullscreen);
 
 // Mouse input events:
 typedef void (*wlclient_mouse_focus_handler)(struct wlclient_window* window, bool hasMouseFocus);
@@ -92,7 +94,7 @@ typedef void (*wlclient_keyboard_key_handler)(
 );
 typedef void (*wlclient_keyboard_text_handler)(struct wlclient_window* window, const char* utf8, usize len);
 typedef void (*wlclient_keyboard_modifiers_handler)(struct wlclient_window* window, u32 modifiers);
-typedef void (*wlclient_keyboard_repeat_info_handler)(struct wlclient_window* window, i32 rate, i32 delay);
+typedef void (*wlclient_keyboard_repeat_info_handler)(struct wlclient_window* window, i32 rate, i32 delay_ms);
 
 typedef struct wlclient_allocator {
     void* (*alloc)(usize size);
@@ -166,12 +168,16 @@ typedef struct wlclient_input_device {
     char* seat_name;
     struct wl_pointer* pointer;
     struct wl_keyboard* keyboard;
+    // The keyboard target surface helps identify the window for witch a keyboard event is fired.
     struct wl_surface* keyboard_target_surface;
-    struct xkb_context* xkb_context;
-    struct xkb_keymap* xkb_keymap;
-    struct xkb_state* xkb_state;
-    struct xkb_compose_table* xkb_compose_table;
-    struct xkb_compose_state* xkb_compose_state;
+
+    struct {
+        struct xkb_context* context;
+        struct xkb_keymap* keymap;
+        struct xkb_state* state;
+        struct xkb_compose_table* compose_table;
+        struct xkb_compose_state* compose_state;
+    } xkb;
 } wlclient_input_device;
 
 typedef enum wlclient_edge {
@@ -257,6 +263,8 @@ typedef struct wlclient_window_data {
     wlclient_size_change_handler size_change_handler;
     wlclient_framebuffer_change_handler framebuffer_change_handler;
     wlclient_scale_factor_change_handler scale_factor_change_handler;
+    wlclient_suspended_handler suspended_handler;
+    wlclient_fullscreen_handler fullscreen_handler;
     wlclient_mouse_focus_handler mouse_focus_handler;
     wlclient_mouse_move_handler mouse_move_handler;
     wlclient_mouse_press_handler mouse_press_handler;

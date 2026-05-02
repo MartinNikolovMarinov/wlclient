@@ -73,6 +73,8 @@ void assert_window_state_initialized(
     TEST_ASSERT_NULL(wdata->size_change_handler);
     TEST_ASSERT_NULL(wdata->framebuffer_change_handler);
     TEST_ASSERT_NULL(wdata->scale_factor_change_handler);
+    TEST_ASSERT_NULL(wdata->suspended_handler);
+    TEST_ASSERT_NULL(wdata->fullscreen_handler);
     TEST_ASSERT_NULL(wdata->mouse_focus_handler);
     TEST_ASSERT_NULL(wdata->mouse_move_handler);
     TEST_ASSERT_NULL(wdata->mouse_press_handler);
@@ -112,11 +114,11 @@ void assert_global_state_initialized() {
         TEST_ASSERT_NOT_NULL(s->input_devices[i].seat_name);
         TEST_ASSERT_TRUE(s->input_devices[i].seat_version > 0);
         TEST_ASSERT_NULL(s->input_devices[i].keyboard_target_surface);
-        TEST_ASSERT_NULL(s->input_devices[i].xkb_context);
-        TEST_ASSERT_NULL(s->input_devices[i].xkb_keymap);
-        TEST_ASSERT_NULL(s->input_devices[i].xkb_state);
-        TEST_ASSERT_NULL(s->input_devices[i].xkb_compose_table);
-        TEST_ASSERT_NULL(s->input_devices[i].xkb_compose_state);
+        TEST_ASSERT_NULL(s->input_devices[i].xkb.context);
+        TEST_ASSERT_NULL(s->input_devices[i].xkb.keymap);
+        TEST_ASSERT_NULL(s->input_devices[i].xkb.state);
+        TEST_ASSERT_NULL(s->input_devices[i].xkb.compose_table);
+        TEST_ASSERT_NULL(s->input_devices[i].xkb.compose_state);
         // TEST_ASSERT_NOT_NULL(s->input_devices[i].pointer);
         // TEST_ASSERT_NOT_NULL(s->input_devices[i].keyboard);
     }

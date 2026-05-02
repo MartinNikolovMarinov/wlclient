@@ -77,7 +77,7 @@ void handle_keyboard_key(struct wlclient_window* window, u32 keycode, u32 keysym
 }
 
 void handle_keyboard_text(struct wlclient_window* window, const char* utf8, usize len) {
-    // printf("USER SPACE: Keyboard text for window (id=%d) len=%"PRIu64" utf8=\"%.*s\"\n", window->id, len, (i32)len, utf8);
+    printf("USER SPACE: Keyboard text for window (id=%d) len=%"PRIu64" utf8=\"%.*s\"\n", window->id, len, (i32)len, utf8);
 }
 
 void handle_keyboard_modifiers(struct wlclient_window* window, u32 modifiers) {
@@ -94,10 +94,10 @@ void handle_keyboard_modifiers(struct wlclient_window* window, u32 modifiers) {
     // );
 }
 
-void handle_keyboard_repeat_info(struct wlclient_window* window, i32 rate, i32 delay) {
+void handle_keyboard_repeat_info(struct wlclient_window* window, i32 rate, i32 delay_ms) {
     // printf(
-    //     "USER SPACE: Keyboard repeat info for window (id=%d) rate=%d delay=%d\n",
-    //     window->id, rate, delay
+    //     "USER SPACE: Keyboard repeat info for window (id=%d) rate=%d delay_ms=%d\n",
+    //     window->id, rate, delay_ms
     // );
 }
 
