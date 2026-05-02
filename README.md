@@ -51,7 +51,7 @@ Features that are next in the development pipeline:
 | Cursor (setting, animating, size changes)    | Planned     |             |
 | Fractional scaling (`wp-fractional-scale`)   | Planned     |             |
 | Clipboard                                    | Planning    |             |
-| Window visibility (`SUSPENDED` state)        | Planning    |             |
+| Window visibility (`SUSPENDED` state)        | Done        |             |
 | Image loading (`stb_image`)                  | Planning    | Likely needed for loading custom cursor icons |
 | Decoration opacity / alpha blending          | Planning    | Currently broken |
 
@@ -106,7 +106,7 @@ Runtime dependencies: `libwayland-client`, `libxkbcommon`, `libwayland-egl`, `li
 ### vs. GLFW
 
 - **Pointer events are frame-batched, not per-event.** GLFW fires a callback per `wl_pointer` event because its API is an X11/Win32-era synchronous-callback contract. `wlclient` dispatches at `wl_pointer.frame`, so motion coalesces into a single call per frame and button presses see the final motion coordinates. Matches how the protocol was designed.
-- **Compositor-driven visibility (planned).** GLFW's `iconify` callback does not fire on Wayland — it's a known limitation because GLFW doesn't bind `xdg_wm_base` v6 and map `SUSPENDED` state back into its API. `wlclient` intends to expose this as a first-class callback.
+- **Compositor-driven visibility.** GLFW's `iconify` callback does not fire on Wayland — it's a known limitation because GLFW doesn't bind `xdg_wm_base` v6 and map `SUSPENDED` state back into its API. `wlclient` tracks the `SUSPENDED` state internally and avoids unnecessary buffer swaps while suspended.
 - **No hidden global state for the window system.** GLFW has implicit global init; `wlclient` requires an explicit `wlclient_init` / `wlclient_shutdown` pair and a user-supplied allocator.
 - **Client-side decorations are the library's problem, not the user's.** GLFW relies on `zxdg_decoration_manager`, or `libdcor`, or a fallback. `wlclient` does not use `libdcor`.
 

@@ -195,8 +195,6 @@ i32 main(void) {
     glViewport(0, 0, (i32)fb_w, (i32)fb_h);
 
     while (g_running) {
-        // wlclient_toggle_window_decor(&window);
-
         glClear(GL_COLOR_BUFFER_BIT);
 
         result_code = wlclient_egl_swap_buffers(&window);

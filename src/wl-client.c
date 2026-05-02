@@ -175,7 +175,7 @@ wlclient_error_code wlclient_init(wlclient_allocator* allocator) {
         return WLCLIENT_ERROR_INIT_FAILED;
     }
 
-    // Make sure the pixel format is intentionally set to a value.
+    // Make sure the pixel format is intentionally set to something invalid.
     g_state.preferred_pixel_format = -1;
 
     // Setup the global registry
@@ -190,7 +190,7 @@ wlclient_error_code wlclient_init(wlclient_allocator* allocator) {
         ret = wl_registry_add_listener(g_state.registry, &registry_listener, NULL);
         ENSURE_OR_GOTO_ERR(ret == 0);
 
-        // Block until all pending request to discover globals are processed.
+        // Roundtrip to ensure global discover requests are processed.
         ret = wl_display_roundtrip(g_state.display);
         ENSURE_OR_GOTO_ERR(ret >= 0);
     }
