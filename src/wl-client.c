@@ -511,6 +511,12 @@ wlclient_error_code wlclient_show_decor(wlclient_window* window) {
         return WLCLIENT_ERROR_OK;
     }
 
+    // If fullscreen decoration show does nothing but it should still has to set the csd_hidden flag.
+    wdata->csd_hidden = false;
+    if (wdata->is_fullscreen) {
+        return WLCLIENT_ERROR_OK;
+    }
+
     WLCLIENT_LOG_DEBUG("Show window(id=%" PRIi32") client side decorations", window->id);
 
     wdata->csd_hidden = false;
