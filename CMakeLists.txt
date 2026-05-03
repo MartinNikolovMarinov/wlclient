@@ -84,6 +84,7 @@ set(src_wlclient
     lib/wayland/xdg-shell-client-protocol.c
     lib/wayland/wayland-client-protocol.c
     lib/wayland/fractional-scale-v1-client-protocol.c
+    lib/wayland/viewporter-client-protocol.c
 )
 
 if (WLCLIENT_BACKEND_EGL)

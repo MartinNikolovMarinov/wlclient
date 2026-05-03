@@ -346,7 +346,7 @@ wlclient_error_code wlclient_window_create(
         // Associated the surface with the window
         wl_surface_set_user_data(wdata->surface, window);
 
-        const static struct wl_surface_listener surface_listener = {
+        static const struct wl_surface_listener surface_listener = {
             .enter = surface_enter,
             .leave = surface_leave,
             .preferred_buffer_scale = surface_preferred_buffer_scale, // sets the scale factor
@@ -368,13 +368,13 @@ wlclient_error_code wlclient_window_create(
         // TODO: [MIN_WINDOW_SIZE] allow setting minimin content size and calculate the window size from that.
         // xdg_toplevel_set_min_size(wdata->xdg_toplevel, (i32)min_w, (i32)min_h);
 
-        const static struct xdg_surface_listener xdg_surface_listener = {
+        static const struct xdg_surface_listener xdg_surface_listener = {
             .configure = xdg_surface_configure // synchronizes the in flight packets
         };
         ret = xdg_surface_add_listener(wdata->xdg_surface, &xdg_surface_listener, window);
         ENSURE_OR_GOTO_ERR(ret == 0);
 
-        const static struct xdg_toplevel_listener toplevel_listener = {
+        static const struct xdg_toplevel_listener toplevel_listener = {
             .close = xdg_toplevel_close,
             .configure = xdg_toplevel_configure, // sets the in flight window logical width and height
             .configure_bounds = xdg_toplevel_configure_bounds,
@@ -598,7 +598,7 @@ WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns) {
     {
         [DISPLAY_FD] = {.fd = wl_display_get_fd(g_state.display), .events = POLLIN, .revents = 0},
     };
-    const i32 pfds_size = WLCLIENT_ARRAY_SIZE(pfds);
+    const nfds_t pfds_size = WLCLIENT_ARRAY_SIZE(pfds);
 
     while (!received_event)
     {

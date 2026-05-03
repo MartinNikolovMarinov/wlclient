@@ -8,6 +8,10 @@
 #include <poll.h>
 #include <errno.h> // IWYU pragma: keep
 
+#if defined(CPU_ARCH_X86_64) && CPU_ARCH_X86_64 == 1
+#include <x86intrin.h>
+#endif
+
 u64 wlclient_get_unix_timestamp_now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);

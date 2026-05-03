@@ -54,6 +54,7 @@
         _Pragma("GCC diagnostic ignored \"-Wundef\"")                      \
         _Pragma("GCC diagnostic ignored \"-Wnull-dereference\"")           \
         _Pragma("GCC diagnostic ignored \"-Wswitch-enum\"")                \
+        _Pragma("GCC diagnostic ignored \"-Wunused-parameter\"")           \
         _Pragma("GCC diagnostic ignored \"-Wincompatible-pointer-types\"")
 #endif
 

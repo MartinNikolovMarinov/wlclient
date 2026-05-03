@@ -112,7 +112,7 @@ typedef struct wlclient_window_decoration_config {
     wlclient_color decor_color; // Colors for the decoration
 } wlclient_window_decoration_config;
 
-const static wlclient_window_decoration_config WLCLIENT_NO_DECORATION_CONFIG = {
+static const wlclient_window_decoration_config WLCLIENT_NO_DECORATION_CONFIG = {
     .edge_logical_thickness = 0,
     .decor_logical_height = 0,
     .edge_color = {0},
