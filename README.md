@@ -44,13 +44,8 @@ Features that are next in the development pipeline:
 
 | High Priority Feature                        | Status      | Notes       |
 | -------------------------------------------- | ----------- | ----------- |
-| Keyboard input                               | Done        |             |
-| Window fullscreen                            | Done        |             |
-| Window visibility (`SUSPENDED` state)        | Done        |             |
 | Pointer axis (scroll)                        | In Progress |             |
-| Window minimize/iconify                      | In Progress |             |
-| Window maximize                              | In Progress |             |
-| Fractional scaling (`wp-fractional-scale`)   | Planned     |             |
+| Fractional scaling (`wp-fractional-scale`)   | In Progress |             |
 | Cursor (setting, animating, size changes)    | Planned     |             |
 | Allow window to start in fullscreen          | Planned     |             |
 | Clipboard                                    | Planning    |             |
@@ -59,18 +54,19 @@ Features that are next in the development pipeline:
 
 Features that depend on the above being finished:
 
-| Feature                                      | Classification | Notes       |
-| -------------------------------------------- | -------------- | ----------- |
-| Compositor side decoration (SSD) rendering   | Important      | The decoration extension should be used on compositors that support it. |
-| Decoration buttons for hide/show/minimize    | Important      | Probably should have configurable icons. |
-| Multi-monitor support                        | Important      | Enumeration, features querying, connect/disconnect events, per-monitor scale factor, etc. |
-| Extensive multi-window setup testing         | Necessary      | Automated testing for multi-window scenarios |
-| Double click support                         | Nice to have   | For both mouse and keyboard buttons |
-| Window icon                                  | Nice to have   | Should be easy to add support for window icons after this is done for cursors |
-| Font rendering (`stb_truetype`)              | Nice to have   | Likely needed if window decorations are to render a title |
-| Joystick support                             | Nice to have   | |
-| Touch support                                | Nice to have   | |
-| Performance measurements                     | Nice to have   | |
+| Feature                                        | Classification | Notes       |
+| ---------------------------------------------- | -------------- | ----------- |
+| Compositor side decoration (SSD) rendering     | Important      | The decoration extension should be used on compositors that support it. |
+| Decoration buttons for minimize/maximize/close | Important      | Probably should have configurable icons. |
+| Multi-monitor support                          | Important      | Enumeration, features querying, connect/disconnect events, per-monitor scale factor, etc. |
+| Extensive multi-window setup testing           | Necessary      | Automated testing for multi-window scenarios |
+| Double click support                           | Nice to have   | For both mouse and keyboard buttons |
+| Window icon                                    | Nice to have   | Should be easy to add support for window icons after this is done for cursors |
+| Window activation / present-to-front           | Nice to have   | Requires an extension such as `xdg-activation-v1`; Wayland does not allow unconditional focus/raise requests. |
+| Font rendering (`stb_truetype`)                | Nice to have   | Likely needed if window decorations are to render a title |
+| Joystick support                               | Nice to have   | |
+| Touch support                                  | Nice to have   | |
+| Performance measurements                       | Nice to have   | |
 
 Plans for backend support:
 

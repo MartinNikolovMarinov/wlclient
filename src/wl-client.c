@@ -469,18 +469,15 @@ void wlclient_window_get_framebuffer(wlclient_window* window, u32* w, u32* h) {
     *h = wdata->framebuffer_pixel_height;
 }
 
-wlclient_error_code wlclient_window_hide_decor(wlclient_window* window) {
-    if (!window || window->id < 0) return WLCLIENT_ERROR_WINDOW_TOGGLE_DECOR_FAILED;
-
+void wlclient_window_hide_decor(wlclient_window* window) {
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
-    WLCLIENT_ASSERT(wdata->used, "Attempt to toggle window that is unused");
 
     if (wdata->decor_logical_height == 0 || wdata->edge_logical_thickness == 0) {
-        // Decoration not configured
-        return WLCLIENT_ERROR_OK;
+        // Decoration not configured/disabled for this window.
+        return;
     }
     if (wdata->csd_hidden) {
-        return WLCLIENT_ERROR_OK;
+        return;
     }
 
     WLCLIENT_LOG_DEBUG("Hide window(id=%" PRIi32") client side decorations", window->id);
@@ -495,28 +492,24 @@ wlclient_error_code wlclient_window_hide_decor(wlclient_window* window) {
     edges_hide(wdata);
 
     notify_window_resize(window, wdata);
-
-    return WLCLIENT_ERROR_OK;
 }
 
-wlclient_error_code wlclient_window_show_decor(wlclient_window* window) {
-    if (!window || window->id < 0) return WLCLIENT_ERROR_WINDOW_TOGGLE_DECOR_FAILED;
-
+void wlclient_window_show_decor(wlclient_window* window) {
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
-    WLCLIENT_ASSERT(wdata->used, "Attempt to toggle window that is unused");
 
-    if (wdata->decor_logical_height == 0 || wdata->edge_logical_thickness == 0) {
-        WLCLIENT_LOG_WARN("Can't show decoration because it isn't configured");
-        return WLCLIENT_ERROR_WINDOW_TOGGLE_DECOR_FAILED;
-    }
+    WLCLIENT_PANIC(
+        wdata->decor_logical_height != 0 && wdata->edge_logical_thickness != 0,
+        "Can't show decoration because it isn't configured"
+    );
+
     if (!wdata->csd_hidden) {
-        return WLCLIENT_ERROR_OK;
+        return;
     }
 
     // If fullscreen decoration show does nothing but it should still has to set the csd_hidden flag.
     wdata->csd_hidden = false;
     if (wdata->is_fullscreen) {
-        return WLCLIENT_ERROR_OK;
+        return;
     }
 
     WLCLIENT_LOG_DEBUG("Show window(id=%" PRIi32") client side decorations", window->id);
@@ -531,8 +524,71 @@ wlclient_error_code wlclient_window_show_decor(wlclient_window* window) {
     edges_render(wdata);
 
     notify_window_resize(window, wdata);
+}
 
-    return WLCLIENT_ERROR_OK;
+bool wlclient_window_set_minimize(wlclient_window* window) {
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+
+    bool is_supported = (wdata->toplevel_capabilities & TOPLEVEL_CAPABILITIES_CAN_MINIMIZE) != 0;
+    if (is_supported) {
+        xdg_toplevel_set_minimized(wdata->xdg_toplevel);
+        bool flushed_ok = display_flush(g_state.display);
+        return flushed_ok;
+    }
+
+    return is_supported;
+}
+
+bool wlclient_window_set_maximize(wlclient_window* window) {
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+
+    bool is_supported = (wdata->toplevel_capabilities & TOPLEVEL_CAPABILITIES_CAN_MAXIMIZE) != 0;
+    if (is_supported) {
+        xdg_toplevel_set_maximized(wdata->xdg_toplevel);
+        bool flushed_ok = display_flush(g_state.display);
+        return flushed_ok;
+    }
+
+    return is_supported;
+}
+
+bool wlclient_window_unset_maximize(wlclient_window* window) {
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+
+    bool is_supported = (wdata->toplevel_capabilities & TOPLEVEL_CAPABILITIES_CAN_MAXIMIZE) != 0;
+    if (is_supported) {
+        xdg_toplevel_unset_maximized(wdata->xdg_toplevel);
+        bool flushed_ok = display_flush(g_state.display);
+        return flushed_ok;
+    }
+
+    return is_supported;
+}
+
+bool wlclient_window_set_fullscreen(wlclient_window* window) {
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+
+    bool is_supported = (wdata->toplevel_capabilities & TOPLEVEL_CAPABILITIES_CAN_FULLSCREEN) != 0;
+    if (is_supported) {
+        xdg_toplevel_set_fullscreen(wdata->xdg_toplevel, NULL);
+        bool flushed_ok = display_flush(g_state.display);
+        return flushed_ok;
+    }
+
+    return is_supported;
+}
+
+bool wlclient_window_unset_fullscreen(wlclient_window* window) {
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+
+    bool is_supported = (wdata->toplevel_capabilities & TOPLEVEL_CAPABILITIES_CAN_FULLSCREEN) != 0;
+    if (is_supported) {
+        xdg_toplevel_unset_fullscreen(wdata->xdg_toplevel);
+        bool flushed_ok = display_flush(g_state.display);
+        return flushed_ok;
+    }
+
+    return is_supported;
 }
 
 WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns) {
@@ -1727,14 +1783,34 @@ static void xdg_toplevel_configure_bounds(void* data, struct xdg_toplevel* tople
 *   caps      - array of xdg_toplevel_wm_capabilities values
 */
 static void xdg_toplevel_configure_wm_capabilities(void* data, struct xdg_toplevel* toplevel, struct wl_array* caps) {
-    (void)data;
     (void)toplevel;
 
-    WLCLIENT_LOG_TRACE("Toplevel capabilities:");
+    wlclient_window* window = data;
+    wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
+
     u32 *value;
     usize i = 0;
+    WLCLIENT_LOG_TRACE("Toplevel capabilities:");
     wl_array_for_each(value, caps) {
         WLCLIENT_LOG_TRACE("  [%" PRIu64 "] = %" PRIu32, i++, *value);
+
+        switch (*value) {
+            case XDG_TOPLEVEL_WM_CAPABILITIES_WINDOW_MENU:
+                wdata->toplevel_capabilities |= TOPLEVEL_CAPABILITIES_CAN_SHOW_WINDOW_MENU;
+                break;
+
+            case XDG_TOPLEVEL_WM_CAPABILITIES_MAXIMIZE:
+                wdata->toplevel_capabilities |= TOPLEVEL_CAPABILITIES_CAN_MAXIMIZE;
+                break;
+
+            case XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN:
+                wdata->toplevel_capabilities |= TOPLEVEL_CAPABILITIES_CAN_FULLSCREEN;
+                break;
+
+            case XDG_TOPLEVEL_WM_CAPABILITIES_MINIMIZE:
+                wdata->toplevel_capabilities |= TOPLEVEL_CAPABILITIES_CAN_MINIMIZE;
+                break;
+        }
     }
 }
 

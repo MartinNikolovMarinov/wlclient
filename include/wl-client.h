@@ -18,9 +18,13 @@ WLCLIENT_API_EXPORT wlclient_error_code wlclient_window_create(
 );
 WLCLIENT_API_EXPORT void wlclient_window_destroy(wlclient_window* window);
 WLCLIENT_API_EXPORT void wlclient_window_get_framebuffer(wlclient_window* window, u32* w, u32* h);
-WLCLIENT_API_EXPORT wlclient_error_code wlclient_window_hide_decor(wlclient_window* window);
-WLCLIENT_API_EXPORT wlclient_error_code wlclient_window_show_decor(wlclient_window* window);
-WLCLIENT_API_EXPORT wlclient_error_code wlclient_window_minimize(wlclient_window* window);
+WLCLIENT_API_EXPORT void wlclient_window_hide_decor(wlclient_window* window);
+WLCLIENT_API_EXPORT void wlclient_window_show_decor(wlclient_window* window);
+WLCLIENT_API_EXPORT bool wlclient_window_set_minimize(wlclient_window* window);
+WLCLIENT_API_EXPORT bool wlclient_window_set_maximize(wlclient_window* window);
+WLCLIENT_API_EXPORT bool wlclient_window_unset_maximize(wlclient_window* window);
+WLCLIENT_API_EXPORT bool wlclient_window_set_fullscreen(wlclient_window* window);
+WLCLIENT_API_EXPORT bool wlclient_window_unset_fullscreen(wlclient_window* window);
 
 WLCLIENT_API_EXPORT wlclient_error_code wlclient_poll_events(u64 timeout_ns);
 

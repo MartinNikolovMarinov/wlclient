@@ -66,13 +66,31 @@ void handle_keyboard_focus(struct wlclient_window* window, bool has_keyboard_foc
 }
 
 void handle_keyboard_key(struct wlclient_window* window, u32 keycode, u32 keysym, bool is_pressed, u32 modifiers) {
-    // printf(
-    //     "USER SPACE: Keyboard key for window (id=%d) keycode=%u keysym=%u pressed=%s modifiers=%u\n",
-    //     window->id, keycode, keysym, is_pressed ? "true" : "false", modifiers
-    // );
+    printf(
+        "USER SPACE: Keyboard key for window (id=%d) keycode=%u keysym=%u pressed=%s modifiers=%u\n",
+        window->id, keycode, keysym, is_pressed ? "true" : "false", modifiers
+    );
 
     if (keysym == XKB_KEY_Escape) {
         g_running = 0;
+    }
+
+    if (keysym == XKB_KEY_f) {
+        printf("FULLSCREENING");
+        wlclient_window_set_fullscreen(window);
+    }
+    if (keysym == XKB_KEY_g) {
+        printf("UN-FULLSCREENING");
+        wlclient_window_unset_fullscreen(window);
+    }
+
+    if (keysym == XKB_KEY_o) {
+        printf("MAXIMIZING");
+        wlclient_window_set_maximize(window);
+    }
+    if (keysym == XKB_KEY_p) {
+        printf("UN-MAXIMIZING");
+        wlclient_window_unset_maximize(window);
     }
 }
 
@@ -108,7 +126,7 @@ i32 main(void) {
 
     wlclient_error_code result_code = 0;
 
-    wlclient_log_set_level(WLCLIENT_LOG_LEVEL_DEBUG);
+    wlclient_log_set_level(WLCLIENT_LOG_LEVEL_WARN);
     result_code = wlclient_init(NULL);
     if (result_code != WLCLIENT_ERROR_OK) {
         printf("ERROR - %d\n", result_code);
@@ -208,8 +226,6 @@ i32 main(void) {
             printf("POLLING FAILED ERROR - %d\n", result_code);
             goto done;
         }
-
-        // sleep(1);
     }
 
 done:

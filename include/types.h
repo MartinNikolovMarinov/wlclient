@@ -57,7 +57,6 @@ typedef enum wlclient_error_code {
     WLCLIENT_ERROR_EVENT_POLL_FAILED,
     WLCLIENT_ERROR_EVENT_POLL_TIMEOUT,
     WLCLIENT_ERROR_WINDOW_CREATE_FAILED,
-    WLCLIENT_ERROR_WINDOW_TOGGLE_DECOR_FAILED,
 
     WLCLIENT_ERROR_EGL_INIT_FAILED,
     WLCLIENT_ERROR_EGL_WINDOW_CREATE_FAILED,
@@ -143,6 +142,14 @@ typedef enum wlclient_toplevel_state {
     TOPLEVEL_STATE_TILED_TOP = 1 << 7,
     TOPLEVEL_STATE_TILED_BOTTOM = 1 << 8,
 } wlclient_toplevel_state;
+
+typedef enum wlclient_toplevel_capabilities {
+    TOPLEVEL_CAPABILITIES_NONE = 0,
+	TOPLEVEL_CAPABILITIES_CAN_SHOW_WINDOW_MENU = 1 << 0,
+	TOPLEVEL_CAPABILITIES_CAN_MAXIMIZE = 1 << 1,
+    TOPLEVEL_CAPABILITIES_CAN_MINIMIZE = 1 << 2,
+    TOPLEVEL_CAPABILITIES_CAN_FULLSCREEN = 1 << 3,
+} wlclient_toplevel_capabilities;
 
 typedef struct wlclient_input_device {
     struct {
@@ -237,6 +244,8 @@ typedef struct wlclient_window_data {
     struct xdg_surface* xdg_surface;
     // XDG toplevel role — makes the surface a desktop window with title, close, resize, etc.
     struct xdg_toplevel* xdg_toplevel;
+    // Toplevel capabilities
+    wlclient_toplevel_capabilities toplevel_capabilities;
 
     // The window not visible on the screen and the compositor will not be painting it.
     bool is_suspended;
@@ -276,6 +285,8 @@ typedef struct wlclient_window_data {
 } wlclient_window_data;
 
 typedef struct wlclient_global_state {
+    // All dynamic memory allocations performed by this library go through this interface. This excludes allocations
+    // made internally by the standard library or external dependencies.
     wlclient_allocator allocator;
 
     // The object that represents a client connection to a Wayland compositor.
@@ -287,7 +298,7 @@ typedef struct wlclient_global_state {
 
     // The compositor is the factory interface for creating surfaces and regions.
     struct wl_compositor* compositor;
-    // The object exposing sub-surface compositing capabilities. This is needed for the decoration subsurface.
+    // The object exposing sub-surface compositing capabilities. This is needed for the decoration subsurfaces.
     struct wl_subcompositor* subcompositor;
 
     // The singleton global object that provides support for shared memory.
