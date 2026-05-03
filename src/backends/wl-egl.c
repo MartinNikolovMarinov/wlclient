@@ -125,7 +125,7 @@ wlclient_error_code wlclient_egl_init(EGLenum api) {
     // Set backend hooks on the wayland window:
     {
         _wlclient_set_backend_shutdown(egl_shutdown);
-        _wlclient_set_backend_destroy_window(egl_destroy_window);
+        _wlclient_set_backend_window_destroy(egl_destroy_window);
         _wlclient_set_backend_resize_framebuffer(egl_resize_window);
         _wlclient_set_backend_scale_change(egl_scale_change_window);
     }

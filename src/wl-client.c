@@ -61,18 +61,19 @@ static wlclient_global_state g_state;
 static void set_allocator(wlclient_allocator* allocator);
 
 static void destroy_all_input_devices(void);
-static void destroy_input_device(wlclient_input_device* input_device);
-static void destroy_input_device_seat(wlclient_input_device* input_device);
-static void destroy_input_device_pointer(wlclient_input_device* input_device);
-static void destroy_input_device_keyboard(wlclient_input_device* input_device);
-static void destroy_input_device_xkb(wlclient_input_device* input_device);
-static void store_new_input_device(u32 id, struct wl_seat* seat, u32 seat_version);
-static wlclient_input_device* find_input_device_by_seat(struct wl_seat* seat);
-static i32 find_input_device_index_by_id(u32 id);
-static void remove_and_destroy_input_device_by_id(i32 idx);
+static void input_device_destroy(wlclient_input_device* input_device);
+static void input_device_seat_destroy(wlclient_input_device* input_device);
+static void input_device_pointer_destroy(wlclient_input_device* input_device);
+static void input_device_keyboard_destroy(wlclient_input_device* input_device);
+static void input_device_xkb_destroy(wlclient_input_device* input_device);
+static void input_device_store_new(u32 id, struct wl_seat* seat, u32 seat_version);
+static wlclient_input_device* input_device_find_by_seat(struct wl_seat* seat);
+static i32 input_device_find_index_by_id(u32 id);
+static void input_device_remove_and_destroy_by_id(i32 idx);
 
-static void destroy_window_data(wlclient_window_data* wdata);
-static void log_window_data_dimensions(wlclient_window_data* wdata, wlclient_log_level level, const char* function_name);
+static void window_data_destroy(wlclient_window_data* wdata);
+static void window_data_log_dimensions(wlclient_window_data* wdata, wlclient_log_level level, const char* function_name);
+
 static void apply_window_geometry(wlclient_window_data* wdata);
 static void notify_window_resize(wlclient_window* window, wlclient_window_data* wdata);
 
@@ -240,7 +241,7 @@ void wlclient_shutdown(void) {
     for (i32 i = 0; i < WLCLIENT_WINDOWS_COUNT; i++) {
         if (g_state.windows[i].used) {
             wlclient_window window = { .id = i };
-            wlclient_destroy_window(&window);
+            wlclient_window_destroy(&window);
         }
     }
 
@@ -267,7 +268,7 @@ void wlclient_shutdown(void) {
     WLCLIENT_LOG_INFO("Shutdown done");
 }
 
-wlclient_error_code wlclient_create_window(
+wlclient_error_code wlclient_window_create(
     wlclient_window* window,
     u32 content_width, u32 content_height,
     const char* title,
@@ -441,11 +442,11 @@ wlclient_error_code wlclient_create_window(
 
 error:
     window->id = -1;
-    destroy_window_data(wdata);
+    window_data_destroy(wdata);
     return WLCLIENT_ERROR_WINDOW_CREATE_FAILED;
 }
 
-void wlclient_destroy_window(wlclient_window* window) {
+void wlclient_window_destroy(wlclient_window* window) {
     if (!window || window->id < 0) return;
 
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
@@ -454,12 +455,12 @@ void wlclient_destroy_window(wlclient_window* window) {
     if (g_state.backend_destroy_window) {
         g_state.backend_destroy_window(window);
     }
-    destroy_window_data(wdata);
+    window_data_destroy(wdata);
     window->id = -1;
     WLCLIENT_LOG_DEBUG("Destroyed");
 }
 
-void wlclient_get_framebuffer(wlclient_window* window, u32* w, u32* h) {
+void wlclient_window_get_framebuffer(wlclient_window* window, u32* w, u32* h) {
     WLCLIENT_ASSERT(window, "window argument is null");
     WLCLIENT_ASSERT(w, "w argument is null");
     WLCLIENT_ASSERT(h, "h argument is null");
@@ -468,7 +469,7 @@ void wlclient_get_framebuffer(wlclient_window* window, u32* w, u32* h) {
     *h = wdata->framebuffer_pixel_height;
 }
 
-wlclient_error_code wlclient_hide_decor(wlclient_window* window) {
+wlclient_error_code wlclient_window_hide_decor(wlclient_window* window) {
     if (!window || window->id < 0) return WLCLIENT_ERROR_WINDOW_TOGGLE_DECOR_FAILED;
 
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
@@ -498,7 +499,7 @@ wlclient_error_code wlclient_hide_decor(wlclient_window* window) {
     return WLCLIENT_ERROR_OK;
 }
 
-wlclient_error_code wlclient_show_decor(wlclient_window* window) {
+wlclient_error_code wlclient_window_show_decor(wlclient_window* window) {
     if (!window || window->id < 0) return WLCLIENT_ERROR_WINDOW_TOGGLE_DECOR_FAILED;
 
     wlclient_window_data* wdata = _wlclient_get_wl_window_data(window);
@@ -724,7 +725,7 @@ void _wlclient_set_backend_shutdown(void (*shutdown)(void)) {
     g_state.backend_shutdown = shutdown;
 }
 
-void _wlclient_set_backend_destroy_window(void (*destroy_window)(const wlclient_window* window)) {
+void _wlclient_set_backend_window_destroy(void (*destroy_window)(const wlclient_window* window)) {
     g_state.backend_destroy_window = destroy_window;
 }
 
@@ -780,7 +781,7 @@ static void destroy_all_input_devices(void) {
 
     for (i32 i = 0; i < g_state.input_devices_count; i++) {
         struct wlclient_input_device* input_device = &g_state.input_devices[i];
-        destroy_input_device(input_device);
+        input_device_destroy(input_device);
     }
 
     g_state.input_devices_count = 0;
@@ -788,15 +789,15 @@ static void destroy_all_input_devices(void) {
     WLCLIENT_LOG_INFO("Input devices destroyed");
 }
 
-static void destroy_input_device(wlclient_input_device* input_device) {
-    destroy_input_device_pointer(input_device);
-    destroy_input_device_keyboard(input_device);
-    destroy_input_device_seat(input_device);
+static void input_device_destroy(wlclient_input_device* input_device) {
+    input_device_pointer_destroy(input_device);
+    input_device_keyboard_destroy(input_device);
+    input_device_seat_destroy(input_device);
 
     memset(input_device, 0, sizeof(*input_device));
 }
 
-static void destroy_input_device_seat(wlclient_input_device* input_device) {
+static void input_device_seat_destroy(wlclient_input_device* input_device) {
     if (!input_device) return;
 
     if (input_device->seat_name) {
@@ -814,7 +815,7 @@ static void destroy_input_device_seat(wlclient_input_device* input_device) {
     input_device->seat_name = NULL;
 }
 
-static void destroy_input_device_pointer(wlclient_input_device* input_device) {
+static void input_device_pointer_destroy(wlclient_input_device* input_device) {
     if (!input_device) return;
 
     if (input_device->pointer) {
@@ -827,7 +828,7 @@ static void destroy_input_device_pointer(wlclient_input_device* input_device) {
     input_device->pointer = NULL;
 }
 
-static void destroy_input_device_keyboard(wlclient_input_device* input_device) {
+static void input_device_keyboard_destroy(wlclient_input_device* input_device) {
     if (!input_device) return;
 
     if (input_device->keyboard) {
@@ -839,10 +840,10 @@ static void destroy_input_device_keyboard(wlclient_input_device* input_device) {
 
     input_device->keyboard = NULL;
     input_device->keyboard_target_surface = NULL;
-    destroy_input_device_xkb(input_device);
+    input_device_xkb_destroy(input_device);
 }
 
-static void destroy_input_device_xkb(wlclient_input_device* input_device) {
+static void input_device_xkb_destroy(wlclient_input_device* input_device) {
     if (!input_device) return;
 
     if (input_device->xkb.compose_state) {
@@ -864,8 +865,7 @@ static void destroy_input_device_xkb(wlclient_input_device* input_device) {
     memset(&input_device->xkb, 0, sizeof(input_device->xkb));
 }
 
-
-static void store_new_input_device(u32 id, struct wl_seat* seat, u32 seat_version) {
+static void input_device_store_new(u32 id, struct wl_seat* seat, u32 seat_version) {
     WLCLIENT_PANIC(
         g_state.input_devices_count < WLCLIENT_MAX_INPUT_DEVICES,
         "Maximum allowed seats (%"PRIi32") exceeded.",
@@ -883,7 +883,7 @@ static void store_new_input_device(u32 id, struct wl_seat* seat, u32 seat_versio
     g_state.input_devices_count++;
 }
 
-static wlclient_input_device* find_input_device_by_seat(struct wl_seat* seat) {
+static wlclient_input_device* input_device_find_by_seat(struct wl_seat* seat) {
     for (i32 i = 0; i < g_state.input_devices_count; i++) {
         if (g_state.input_devices[i].seat == seat && g_state.input_devices[i].used) {
             return &g_state.input_devices[i];
@@ -894,14 +894,14 @@ static wlclient_input_device* find_input_device_by_seat(struct wl_seat* seat) {
     return NULL;
 }
 
-static i32 find_input_device_index_by_id(u32 id) {
+static i32 input_device_find_index_by_id(u32 id) {
     for (i32 i = 0; i < g_state.input_devices_count; i++) {
         if (g_state.input_devices[i].seat_id == id) return i;
     }
     return -1;
 }
 
-static void remove_and_destroy_input_device_by_id(i32 idx) {
+static void input_device_remove_and_destroy_by_id(i32 idx) {
     WLCLIENT_PANIC(
         idx >= 0 && idx < g_state.input_devices_count,
         "[BUG] Remove failed; invalid index idx=%" PRIi32,
@@ -910,7 +910,7 @@ static void remove_and_destroy_input_device_by_id(i32 idx) {
 
     wlclient_input_device* input_device = &g_state.input_devices[idx];
 
-    destroy_input_device(input_device);
+    input_device_destroy(input_device);
 
     if (idx == g_state.input_devices_count - 1) {
         g_state.input_devices_count--;
@@ -929,7 +929,7 @@ static void remove_and_destroy_input_device_by_id(i32 idx) {
     g_state.input_devices_count--;
 }
 
-static void destroy_window_data(wlclient_window_data* wdata) {
+static void window_data_destroy(wlclient_window_data* wdata) {
     if (!wdata) return;
 
     if (wdata->xdg_toplevel) xdg_toplevel_destroy(wdata->xdg_toplevel);
@@ -945,7 +945,7 @@ static void destroy_window_data(wlclient_window_data* wdata) {
     memset(wdata, 0, sizeof(*wdata));
 }
 
-static void log_window_data_dimensions(wlclient_window_data* wdata, wlclient_log_level level, const char* function_name) {
+static void window_data_log_dimensions(wlclient_window_data* wdata, wlclient_log_level level, const char* function_name) {
     _wlclient_log_message(
         level, function_name,
         "\n --- Window dimensions ---"
@@ -981,7 +981,6 @@ static void apply_window_geometry(wlclient_window_data* wdata) {
     xdg_surface_set_window_geometry(wdata->xdg_surface, x, y, w, h);
 }
 
-// Notify backend and user code
 static void notify_window_resize(wlclient_window* window, wlclient_window_data* wdata) {
     if (g_state.backend_resize_framebuffer && wdata->used) {
         g_state.backend_resize_framebuffer(window, wdata->framebuffer_pixel_width, wdata->framebuffer_pixel_height);
@@ -1553,7 +1552,7 @@ static void register_global(void* data, struct wl_registry* wl_registry, u32 id,
         i32 ret = wl_seat_add_listener(seat, &listener, NULL);
         WLCLIENT_PANIC(ret == 0, "failed to add seat listener");
 
-        store_new_input_device(id, seat, effective_version);
+        input_device_store_new(id, seat, effective_version);
     }
 }
 
@@ -1574,8 +1573,8 @@ static void register_global_remove(void* data, struct wl_registry* wl_registry, 
     WLCLIENT_LOG_DEBUG("Removing %" PRIu32, id);
 
     {
-        i32 idx = find_input_device_index_by_id(id);
-        if (idx >= 0) remove_and_destroy_input_device_by_id(idx);
+        i32 idx = input_device_find_index_by_id(id);
+        if (idx >= 0) input_device_remove_and_destroy_by_id(idx);
     }
 
     // TODO: [GLOBAL_OBJECT_REMOVE] Should any other objects be removed? GLFW seems to only handle monitors.
@@ -1789,7 +1788,7 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
     wdata->framebuffer_pixel_width = (u32)wdata->scale_factor * wdata->content_logical_width;
     wdata->framebuffer_pixel_height = (u32)wdata->scale_factor * wdata->content_logical_height;
 
-    log_window_data_dimensions(wdata, WLCLIENT_LOG_LEVEL_DEBUG, __func__);
+    window_data_log_dimensions(wdata, WLCLIENT_LOG_LEVEL_DEBUG, __func__);
 
     // At this point the window geometry is clear
     apply_window_geometry(wdata);
@@ -1806,14 +1805,17 @@ static void xdg_surface_configure(void* data, struct xdg_surface* xdg_surface, u
         edges_hide(wdata);
     }
 
-    if (wdata->fullscreen_handler && was_fullscreen != wdata->is_fullscreen) {
-        wdata->fullscreen_handler(window, wdata->is_fullscreen);
-    }
-    if (wdata->suspended_handler && was_suspended != wdata->is_suspended) {
-        wdata->suspended_handler(window, wdata->is_suspended);
-    }
+    // Notify backend and user code
+    {
+        if (wdata->fullscreen_handler && was_fullscreen != wdata->is_fullscreen) {
+            wdata->fullscreen_handler(window, wdata->is_fullscreen);
+        }
+        if (wdata->suspended_handler && was_suspended != wdata->is_suspended) {
+            wdata->suspended_handler(window, wdata->is_suspended);
+        }
 
-    notify_window_resize(window, wdata);
+        notify_window_resize(window, wdata);
+    }
 
     // zero out the in-flight packet's width and height members.
     {
@@ -1839,7 +1841,7 @@ static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilit
 
     WLCLIENT_LOG_DEBUG("Seat capabilities: %"PRIu32, capabilities);
 
-    wlclient_input_device* input_device = find_input_device_by_seat(wl_seat);
+    wlclient_input_device* input_device = input_device_find_by_seat(wl_seat);
     input_device->capabilities = capabilities;
 
     if (capabilities & WL_SEAT_CAPABILITY_KEYBOARD) {
@@ -1863,7 +1865,7 @@ static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilit
         if (input_device->keyboard) {
             // Keyboard was unplugged (or compositor revoked the capability).
             WLCLIENT_LOG_DEBUG("Releasing keyboard for seat(id=%"PRIu32")", input_device->seat_id);
-            destroy_input_device_keyboard(input_device);
+            input_device_keyboard_destroy(input_device);
         }
         else {
             WLCLIENT_LOG_DEBUG("No keyboard capability for seat(id=%"PRIu32")", input_device->seat_id);
@@ -1896,7 +1898,7 @@ static void seat_capabilities(void *data, struct wl_seat *wl_seat, u32 capabilit
         if (input_device->pointer) {
             // Mouse was unplugged (or compositor revoked the capability).
             WLCLIENT_LOG_DEBUG("Releasing mouse for seat(id=%"PRIu32")", input_device->seat_id);
-            destroy_input_device_pointer(input_device);
+            input_device_pointer_destroy(input_device);
         }
         else {
             WLCLIENT_LOG_DEBUG("No mouse capability for seat(id=%"PRIu32")", input_device->seat_id);
@@ -1921,7 +1923,7 @@ static void seat_name(void *data, struct wl_seat *wl_seat, const char *name) {
 
     WLCLIENT_LOG_DEBUG("Seat name: %s", name);
 
-    wlclient_input_device* input_device = find_input_device_by_seat(wl_seat);
+    wlclient_input_device* input_device = input_device_find_by_seat(wl_seat);
     if (input_device->seat_name) {
         g_state.allocator.free(input_device->seat_name);
     }
@@ -2474,14 +2476,14 @@ static void keyboard_keymap(void* data, struct wl_keyboard* wl_keyboard, u32 for
 
         if (!new_idev.xkb.keymap) {
             WLCLIENT_LOG_ERR("Failed to create XKB keymap");
-            destroy_input_device_xkb(&new_idev);
+            input_device_xkb_destroy(&new_idev);
             return;
         }
 
         new_idev.xkb.state = xkb_state_new(new_idev.xkb.keymap);
         if (!new_idev.xkb.state) {
             WLCLIENT_LOG_ERR("Failed to create XKB state");
-            destroy_input_device_xkb(&new_idev);
+            input_device_xkb_destroy(&new_idev);
             return;
         }
 
@@ -2510,7 +2512,7 @@ static void keyboard_keymap(void* data, struct wl_keyboard* wl_keyboard, u32 for
     // After the new xkb state is fully initialzed - destroy the old one and replace it.
     {
         wlclient_input_device* idev = data;
-        destroy_input_device_xkb(idev);
+        input_device_xkb_destroy(idev);
         idev->xkb = new_idev.xkb;
     }
 

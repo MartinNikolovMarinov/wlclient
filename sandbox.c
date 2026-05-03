@@ -123,7 +123,7 @@ i32 main(void) {
         dcor_cfg.decor_logical_height = 50;
         dcor_cfg.decor_color = (wlclient_color) { .r = 0, .g = 255, .b = 255, .a = 255 };
         dcor_cfg.edge_color = (wlclient_color) { .r = 0, .g = 255, .b = 0, .a = 255 };
-        result_code = wlclient_create_window(&window, 800, 600, "Example", &dcor_cfg);
+        result_code = wlclient_window_create(&window, 800, 600, "Example", &dcor_cfg);
         if (result_code != WLCLIENT_ERROR_OK) {
             printf("ERROR - %d\n", result_code);
             goto done;
@@ -189,7 +189,7 @@ i32 main(void) {
     }
 
     u32 fb_w, fb_h;
-    wlclient_get_framebuffer(&window, &fb_w, &fb_h);
+    wlclient_window_get_framebuffer(&window, &fb_w, &fb_h);
 
     glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
     glViewport(0, 0, (i32)fb_w, (i32)fb_h);

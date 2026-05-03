@@ -160,7 +160,7 @@ i32 basic_wlclient_create_window(void) {
     };
 
     wlclient_window window = { .id = -1 };
-    result_code = wlclient_create_window(
+    result_code = wlclient_window_create(
         &window,
         content_width, content_height,
         "create-window-test",
@@ -182,7 +182,7 @@ i32 basic_wlclient_create_window_no_decoration(void) {
     const u32 content_height = 480;
 
     wlclient_window window = { .id = -1 };
-    result_code = wlclient_create_window(
+    result_code = wlclient_window_create(
         &window,
         content_width, content_height,
         "create-window-no-decor-test",
@@ -203,7 +203,7 @@ i32 basic_destroy_never_created_window(void) {
     // A window struct that was never passed through wlclient_create_window.
     // Contract: destroying it is a no-op that leaves global state untouched.
     wlclient_window window = { .id = -1 };
-    wlclient_destroy_window(&window);
+    wlclient_window_destroy(&window);
 
     TEST_ASSERT_EQUAL_INT32(-1, window.id);
 
