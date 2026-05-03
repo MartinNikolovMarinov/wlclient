@@ -25,3 +25,8 @@ wayland-scanner client-header wayland.xml wayland-client-protocol.h
 wayland-scanner private-code wayland.xml wayland-client-protocol.c
 wrap_file wayland-client-protocol.h
 wrap_file wayland-client-protocol.c
+
+wayland-scanner client-header fractional-scale-v1.xml fractional-scale-v1-client-protocol.h
+wayland-scanner private-code fractional-scale-v1.xml fractional-scale-v1-client-protocol.c
+wrap_file fractional-scale-v1-client-protocol.h
+wrap_file fractional-scale-v1-client-protocol.c
