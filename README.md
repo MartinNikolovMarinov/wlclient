@@ -63,6 +63,7 @@ Features that depend on the above being finished:
 | Double click support                           | Nice to have   | For both mouse and keyboard buttons |
 | Window icon                                    | Nice to have   | Should be easy to add support for window icons after this is done for cursors |
 | Window activation / present-to-front           | Nice to have   | Requires an extension such as `xdg-activation-v1`; Wayland does not allow unconditional focus/raise requests. |
+| Idle inhibit                                   | Important      | Requires the idle-inhibit extension so apps can prevent screen blanking/locking during playback or other active use. |
 | Font rendering (`stb_truetype`)                | Nice to have   | Likely needed if window decorations are to render a title |
 | Joystick support                               | Nice to have   | |
 | Touch support                                  | Nice to have   | |
